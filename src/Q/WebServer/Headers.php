@@ -168,7 +168,13 @@ class Q_WebServer_Headers
 
 		// ── Send response ────────────────────────────────
 		$headers['Content-Length'] = strlen($body);
-		$headers['Connection'] = 'close';
+
+		// Keep-alive: persistent workers can reuse the connection.
+		// Forked children always close (the child exits after writing).
+		// Check _keepAlive from the parsed request, or default to close
+		// for safety (child processes, CGI mode).
+		$keepAlive = $requestHeaders['_keepAlive'] ?? false;
+		$headers['Connection'] = $keepAlive ? 'keep-alive' : 'close';
 
 		// Cookies set by the script. A pooled response carries them, because
 		// they were built in the worker and this process has none of its own;
