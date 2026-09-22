@@ -4097,6 +4097,23 @@ HTML;
 					file_put_contents($tmpPath, $partBody);
 				}
 				self::$uploadTempFiles[] = $tmpPath;
+				// Tell the compat layer this is an upload. Both
+				// is_uploaded_file() and move_uploaded_file() are shimmed,
+				// because the real ones answer from a list that only the
+				// SAPI's own multipart parser fills and which is therefore
+				// always empty here. The shims answer from this registry
+				// instead, and nothing on this path ever wrote to it: the
+				// other multipart parser, Q_WebServer_Compat::parseMultipart(),
+				// registers its files, and the worker does not use it.
+				//
+				// So the file arrived whole, $_FILES was correct, and every
+				// application that checks an upload before accepting it --
+				// which is every careful one, and the check is the documented
+				// way to do it -- refused it. In an editor with a progress
+				// dialog that shows as an upload that never finishes.
+				if ($error === UPLOAD_ERR_OK && class_exists('Q_WebServer_Compat', false)) {
+					\Q_WebServer_Compat::$uploadedFiles[$tmpPath] = true;
+				}
 
 				$fileEntry = array(
 					'name'     => $filename,

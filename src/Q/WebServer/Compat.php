@@ -849,7 +849,20 @@ class Q_WebServer_Compat
 		if (!isset(self::$uploadedFiles[$from])) {
 			return false;
 		}
-		$result = rename($from, $to);
+		$result = @rename($from, $to);
+		if (!$result) {
+			// rename() cannot cross a filesystem boundary, and the temporary
+			// directory very often is one: /tmp as tmpfs, or a document root
+			// on a volume of its own. PHP's own move_uploaded_file() falls
+			// back to a copy for exactly this case, so a shim that does not
+			// leaves an application able to accept an upload but not to keep
+			// it -- and the failure is silent, because the function simply
+			// returns false.
+			if (@copy($from, $to)) {
+				@unlink($from);
+				$result = true;
+			}
+		}
 		if ($result) {
 			unset(self::$uploadedFiles[$from]);
 		}
