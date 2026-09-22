@@ -108,7 +108,7 @@ build_with_docker() {
     [ -d "$SCRIPT_DIR/web" ] && cp -r "$SCRIPT_DIR/web" "$TMPDIR/web"
 
     # Keep in sync with .github/workflows/release.yml
-    EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd,dom,xml,simplexml,xmlwriter,xmlreader,iconv,intl,xsl"
+    EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd,dom,xml,simplexml,xmlwriter,xmlreader,iconv,intl,xsl,mysqli,mysqlnd,curl,bcmath,exif"
 
     cat > "$TMPDIR/Dockerfile" << DOCKERFILE
 FROM php:$PHP_VERSION-cli-alpine AS builder
