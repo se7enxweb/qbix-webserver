@@ -47,6 +47,7 @@ class Q_WebServer_Http2_Frame
 	const FLOW_CONTROL_ERROR  = 0x3;
 	const FRAME_SIZE_ERROR    = 0x6;
 	const COMPRESSION_ERROR   = 0x9;
+	const ENHANCE_YOUR_CALM   = 0xb;
 
 	/** The 24 octets every connection opens with, RFC 9113 section 3.4. */
 	const PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";

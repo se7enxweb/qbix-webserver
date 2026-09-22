@@ -49,6 +49,76 @@ class Q_WebServer_Http2_Connection
 	public $outBuffer = '';
 
 	/**
+	 * Resource limits, and why each one exists.
+	 *
+	 * An HTTP/2 connection lets one peer ask a server to hold state on its
+	 * behalf: open streams, a header block being assembled, a body being
+	 * received, bytes queued to send. Every one of those is unbounded unless
+	 * something bounds it, and a peer that never finishes what it starts turns
+	 * each into a way to exhaust the process. None of them require an
+	 * authenticated user or a malformed frame; they are ordinary protocol use,
+	 * taken to excess.
+	 *
+	 * Each is overridable under Q.web.http2.limits, because the right value
+	 * depends on what the application does -- an installation accepting large
+	 * uploads needs a larger body cap than one serving pages.
+	 *
+	 * @property $limits
+	 * @type {array}
+	 */
+	public $limits = array(
+		// Streams open at once. We already advertise 128 in SETTINGS and never
+		// enforced it, which is the part that matters: a peer is entitled to
+		// believe an advertised limit is real.
+		'concurrentStreams' => 128,
+
+		// Total header block for one request, across CONTINUATION frames.
+		// Unbounded, a peer sends CONTINUATION forever and the block grows
+		// until the process dies -- with no request ever completing, so
+		// nothing logs it. This is CVE-2024-27316 in Apache and was the same
+		// shape in several other servers the same week.
+		'headerListSize' => 65536,
+
+		// One request body. Generous, because uploads are a legitimate use.
+		'bodySize' => 67108864,
+
+		// Undecoded inbound bytes. A peer can otherwise announce frames it
+		// never completes and make us hold the fragments.
+		'readBuffer' => 4194304,
+
+		// Bytes queued for a peer that is not reading them. This is the
+		// write-side slowloris, and it arrived with the output buffer that
+		// fixed truncation: what will not fit in the socket waits in memory,
+		// and a peer that simply stops reading makes it grow without end.
+		'writeBuffer' => 8388608,
+
+		// Streams reset without being answered. Opening a stream costs real
+		// work; cancelling it immediately and opening another costs the peer
+		// almost nothing. That asymmetry is CVE-2023-44487, and the defence is
+		// to notice the ratio rather than the rate.
+		'resetStreams' => 256,
+
+		// Frames that oblige us to write something back: PING wants a PONG,
+		// SETTINGS wants an ACK. Cheap to send, not free to answer.
+		'reflexFrames' => 1000,
+
+		// Seconds a connection may sit with nothing happening on it.
+		'idleSeconds' => 120,
+	);
+
+	/** @var integer Streams opened on this connection, ever. */
+	public $streamsOpened = 0;
+
+	/** @var integer Streams reset by the peer before we answered them. */
+	public $streamsReset = 0;
+
+	/** @var integer PING and SETTINGS frames answered. */
+	public $reflexFrames = 0;
+
+	/** @var float When something last arrived, for the idle sweep. */
+	public $lastActivity = 0;
+
+	/**
 	 * Watcher id while waiting for the socket to become writable, else null.
 	 *
 	 * @property $writeWatcher
@@ -99,11 +169,24 @@ class Q_WebServer_Http2_Connection
 	 */
 	function start()
 	{
+		// Limits may be tuned per installation, but never switched off: a
+		// value of 0 or less would mean "unbounded", which is the state this
+		// exists to leave behind.
+		if (class_exists('Q_Config')) {
+			foreach ($this->limits as $name => $default) {
+				$configured = Q_Config::get('Q', 'web', 'http2', 'limits', $name, null);
+				if (is_numeric($configured) and (int) $configured > 0) {
+					$this->limits[$name] = (int) $configured;
+				}
+			}
+		}
+		$this->lastActivity = microtime(true);
+
 		$this->write(Q_WebServer_Http2_Frame::build(
 			Q_WebServer_Http2_Frame::SETTINGS, 0, 0,
 			Q_WebServer_Http2_Frame::buildSettings(array(
 				Q_WebServer_Http2_Frame::SETTINGS_ENABLE_PUSH => 0,
-				Q_WebServer_Http2_Frame::SETTINGS_MAX_CONCURRENT_STREAMS => 128,
+				Q_WebServer_Http2_Frame::SETTINGS_MAX_CONCURRENT_STREAMS => $this->limits['concurrentStreams'],
 				Q_WebServer_Http2_Frame::SETTINGS_INITIAL_WINDOW_SIZE => 1048576,
 				Q_WebServer_Http2_Frame::SETTINGS_MAX_FRAME_SIZE => 16384,
 			))
@@ -128,6 +211,16 @@ class Q_WebServer_Http2_Connection
 	function feed($data)
 	{
 		$this->buffer .= $data;
+		$this->lastActivity = microtime(true);
+
+		// Undecoded bytes are bytes a peer has made us hold. A frame header
+		// announces a length, and until that many bytes arrive the fragment
+		// waits here; a peer that announces and dawdles, or simply streams
+		// faster than we parse, otherwise grows this without end.
+		if (strlen($this->buffer) > $this->limits['readBuffer']) {
+			$this->goaway(Q_WebServer_Http2_Frame::ENHANCE_YOUR_CALM);
+			return false;
+		}
 
 		if (!$this->prefaceSeen) {
 			$len = strlen(Q_WebServer_Http2_Frame::PREFACE);
@@ -176,11 +269,13 @@ class Q_WebServer_Http2_Connection
 			if (isset($settings[$F::SETTINGS_MAX_FRAME_SIZE])) {
 				$this->maxFrameSize = $settings[$F::SETTINGS_MAX_FRAME_SIZE];
 			}
+			if (!$this->reflex()) return false;
 			$this->write($F::build($F::SETTINGS, $F::FLAG_ACK, 0));
 			return true;
 
 		case $F::PING:
 			if ($frame['flags'] & $F::FLAG_ACK) return true;
+			if (!$this->reflex()) return false;
 			// The payload must come back unchanged.
 			$this->write($F::build($F::PING, $F::FLAG_ACK, 0, $frame['payload']));
 			return true;
@@ -201,6 +296,22 @@ class Q_WebServer_Http2_Connection
 			return true;
 
 		case $F::RST_STREAM:
+			// Opening a stream costs this process real work; cancelling it
+			// costs the peer three bytes of payload. A peer that opens and
+			// immediately resets, over and over, extracts work at a rate no
+			// concurrency limit notices, because nothing is ever concurrent.
+			//
+			// Counted rather than rate-limited: a legitimate client resets
+			// streams occasionally -- a navigation away, an aborted fetch --
+			// and the shape that matters is thousands of them on one
+			// connection, not their timing.
+			if (isset($this->streams[$stream])) {
+				++$this->streamsReset;
+				if ($this->streamsReset > $this->limits['resetStreams']) {
+					$this->goaway($F::ENHANCE_YOUR_CALM);
+					return false;
+				}
+			}
 			unset($this->streams[$stream]);
 			return true;
 
@@ -223,6 +334,17 @@ class Q_WebServer_Http2_Connection
 		case $F::CONTINUATION:
 			if (!isset($this->streams[$stream])) return true;
 			$this->streams[$stream]['headerBlock'] .= $frame['payload'];
+
+			// CONTINUATION frames may follow a header block indefinitely, and
+			// a peer that never sets END_HEADERS makes the block grow until
+			// the process dies -- without ever completing a request, so
+			// nothing in an access log shows it happening.
+			if (strlen($this->streams[$stream]['headerBlock'])
+				> $this->limits['headerListSize']
+			) {
+				$this->goaway(Q_WebServer_Http2_Frame::ENHANCE_YOUR_CALM);
+				return false;
+			}
 			if ($frame['flags'] & $F::FLAG_END_HEADERS) {
 				return $this->endHeaders($stream);
 			}
@@ -271,6 +393,26 @@ class Q_WebServer_Http2_Connection
 		}
 
 		if ($stream > $this->lastStream) $this->lastStream = $stream;
+
+		// The advertised concurrency limit, actually applied.
+		//
+		// SETTINGS has always told the peer 128 and nothing counted, so a peer
+		// that believed us was the only thing keeping the number down. Each
+		// open stream holds a header block, a body and a send queue.
+		//
+		// REFUSED_STREAM would be the courteous answer, but this connection
+		// has already exceeded what it was told; the peer is not listening to
+		// SETTINGS, so there is nothing to be gained by a per-stream refusal.
+		$open = 0;
+		foreach ($this->streams as $each) {
+			if (empty($each['finished'])) ++$open;
+		}
+		if ($open >= $this->limits['concurrentStreams']) {
+			$this->goaway(Q_WebServer_Http2_Frame::ENHANCE_YOUR_CALM);
+			return false;
+		}
+
+		++$this->streamsOpened;
 
 		$this->streams[$stream] = array(
 			'headerBlock' => $payload,
@@ -340,6 +482,13 @@ class Q_WebServer_Http2_Connection
 		}
 
 		$this->streams[$stream]['body'] .= $payload;
+
+		// A body is held whole before the application sees it, so its size is
+		// a memory cost this process pays on the peer's say-so.
+		if (strlen($this->streams[$stream]['body']) > $this->limits['bodySize']) {
+			$this->goaway(Q_WebServer_Http2_Frame::ENHANCE_YOUR_CALM);
+			return false;
+		}
 
 		// Say the bytes were consumed, on both the stream and the connection,
 		// or a client sending a large body stalls once it has filled the
@@ -718,6 +867,21 @@ class Q_WebServer_Http2_Connection
 	{
 		if (!is_resource($this->socket)) return false;
 		$this->outBuffer .= $data;
+
+		// Bytes a peer is not reading.
+		//
+		// What will not fit in the socket waits here, which is what makes a
+		// large response survive a full send buffer. It also means a peer that
+		// requests a great deal and then simply stops reading has handed this
+		// process an unbounded allocation -- the write-side of slowloris, and
+		// quieter than the read side, because the request was perfectly valid.
+		if (strlen($this->outBuffer) > $this->limits['writeBuffer']) {
+			$this->outBuffer = '';
+			$this->closed = true;
+			$this->unwatchWritable();
+			return false;
+		}
+
 		return $this->drain();
 	}
 
@@ -764,6 +928,52 @@ class Q_WebServer_Http2_Connection
 
 		$this->unwatchWritable();
 		return true;
+	}
+
+	/**
+	 * Count a frame that obliges us to write something back.
+	 *
+	 * PING and SETTINGS are a few bytes to send and require an answer, so a
+	 * peer can make this process do bounded work per frame at a rate limited
+	 * only by its own bandwidth. Bounded work, unbounded times, is unbounded.
+	 *
+	 * @method reflex
+	 * @return {boolean} false when the connection should be closed
+	 */
+	protected function reflex()
+	{
+		if (++$this->reflexFrames <= $this->limits['reflexFrames']) {
+			return true;
+		}
+		$this->goaway(Q_WebServer_Http2_Frame::ENHANCE_YOUR_CALM);
+		return false;
+	}
+
+	/**
+	 * Has this connection sat doing nothing for longer than it may?
+	 *
+	 * A socket held open costs a file descriptor whether or not anything is
+	 * travelling over it, and descriptors are the scarcest thing this process
+	 * has. A peer that opens connections and says nothing -- slowloris, in its
+	 * oldest form -- exhausts them without sending a single valid request.
+	 *
+	 * Asked by the event loop rather than enforced here, because only the loop
+	 * knows about the other connections and can sweep them together.
+	 *
+	 * @method isIdle
+	 * @param {float} $now
+	 * @return {boolean}
+	 */
+	function isIdle($now = null)
+	{
+		if ($now === null) $now = microtime(true);
+		if (!$this->lastActivity) return false;
+		// A connection with work in hand is not idle, however quiet the peer:
+		// it may be waiting on us.
+		foreach ($this->streams as $each) {
+			if (!empty($each['pending'])) return false;
+		}
+		return ($now - $this->lastActivity) > $this->limits['idleSeconds'];
 	}
 
 	/**

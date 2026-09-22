@@ -1002,6 +1002,27 @@ class Q_WebServer
 			Q_WebSocket::pingSocketIO();
 		});
 
+		// Sweep idle HTTP/2 connections.
+		//
+		// A held socket costs a file descriptor whether or not anything
+		// travels over it, and descriptors are the scarcest resource this
+		// process has. A peer that connects, completes the TLS handshake and
+		// then says nothing occupies one indefinitely -- slowloris in its
+		// oldest form, and it needs no valid request at all.
+		//
+		// Swept here rather than per connection because only the loop can see
+		// them together, and because a timer per connection is itself a
+		// resource a peer could multiply.
+		Q_Evented::repeat(10, function () {
+			if (!self::$http2) return;
+			$now = microtime(true);
+			foreach (self::$http2 as $key => $conn) {
+				if (!$conn or !$conn->isIdle($now)) continue;
+				$conn->goaway(Q_WebServer_Http2_Frame::NO_ERROR);
+				self::closeHttp2($key);
+			}
+		});
+
 		// Request timeout — kill workers that exceed the configured limit
 		$timeout = Q_Config::get('Q', 'webserver', 'requestTimeout', 30);
 		if ($timeout > 0) {
