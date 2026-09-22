@@ -23,6 +23,21 @@
  *
  * @module Q
  */
+/**
+ * A header block that cannot be decoded.
+ *
+ * Thrown rather than returned, because there is no partial answer worth
+ * having: a block that lies about a length has already cost the connection its
+ * HPACK state, and the dynamic table is shared by every subsequent block on
+ * that connection. RFC 7541 calls this a connection error of type
+ * COMPRESSION_ERROR, and the connection layer closes accordingly.
+ *
+ * @class Q_WebServer_Http2_HpackException
+ */
+class Q_WebServer_Http2_HpackException extends Exception
+{
+}
+
 class Q_WebServer_Http2_Hpack
 {
 	/**
@@ -188,6 +203,17 @@ class Q_WebServer_Http2_Hpack
 	 */
 	static function decodeInt($buf, &$pos, $prefixBits)
 	{
+		// Every read here is at an offset a peer chose, on a buffer a peer
+		// sent, before any request exists to reject. Reading past the end is
+		// only a warning in PHP 8 and yields an empty string, but a warning
+		// per byte is written to the log with attacker-controlled frequency,
+		// and with display_errors on it is written into the response.
+		if (!isset($buf[$pos])) {
+			throw new Q_WebServer_Http2_HpackException(
+				'header block ended inside an integer'
+			);
+		}
+
 		$max = (1 << $prefixBits) - 1;
 		$value = ord($buf[$pos]) & $max;
 		$pos++;
@@ -298,8 +324,24 @@ class Q_WebServer_Http2_Hpack
 	 */
 	static function decodeString($buf, &$pos)
 	{
+		if (!isset($buf[$pos])) {
+			throw new Q_WebServer_Http2_HpackException(
+				'header block ended where a string was expected'
+			);
+		}
+
 		$huffman = (ord($buf[$pos]) & 0x80) !== 0;
 		$length = self::decodeInt($buf, $pos, 7);
+
+		// A declared length longer than what is left is a lie, and the usual
+		// way to tell one: substr() would quietly return what there is, so the
+		// block would decode to something plausible that the peer never sent.
+		if ($length < 0 or $pos + $length > strlen($buf)) {
+			throw new Q_WebServer_Http2_HpackException(
+				'header block declares a string longer than itself'
+			);
+		}
+
 		$raw = substr($buf, $pos, $length);
 		$pos += $length;
 		return $huffman ? self::huffmanDecode($raw) : $raw;

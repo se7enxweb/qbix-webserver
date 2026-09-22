@@ -310,7 +310,18 @@ class Q_WebServer_Http2_Connection
 	{
 		$F = 'Q_WebServer_Http2_Frame';
 
-		$list = $this->inbound->decode($this->streams[$stream]['headerBlock']);
+		// A header block that will not decode is a connection error, not a
+		// stream error: HPACK keeps a dynamic table shared by every block on
+		// the connection, so once one block has been misread the table is
+		// wrong and every block after it decodes to something the peer never
+		// sent. RFC 7541 says COMPRESSION_ERROR and close, and that is the
+		// only safe answer.
+		try {
+			$list = $this->inbound->decode($this->streams[$stream]['headerBlock']);
+		} catch (Exception $e) {
+			$this->goaway($F::COMPRESSION_ERROR);
+			return false;
+		}
 		$this->streams[$stream]['headers'] = $list;
 		$this->streams[$stream]['headerBlock'] = '';
 
