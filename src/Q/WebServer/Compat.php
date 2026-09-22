@@ -377,8 +377,17 @@ class Q_WebServer_Compat
 				while ($p >= 0 and is_array($tokens[$p])
 				and $tokens[$p][0] === T_WHITESPACE) $p--;
 				$prev = $p >= 0 ? $tokens[$p] : null;
+				// T_NULLSAFE_OBJECT_OPERATOR is "?->", added in PHP 8.0 and
+				// every bit as much a method call as "->". Missing it did not
+				// merely rewrite something it should not have: it produced
+				// $o?->\Q_WebServer_Compat::_header(...), which is a parse
+				// error, so a file using a nullsafe call to a method sharing a
+				// name with any rewritten function would not load at all.
+				// Guarded by defined() so this still runs on PHP 7.
 				$isMember = is_array($prev)
 					and ($prev[0] === T_OBJECT_OPERATOR or $prev[0] === T_DOUBLE_COLON
+						or (defined('T_NULLSAFE_OBJECT_OPERATOR')
+							and $prev[0] === T_NULLSAFE_OBJECT_OPERATOR)
 						or $prev[0] === T_FUNCTION or $prev[0] === T_CONST);
 
 				if ($isMember) {
@@ -514,6 +523,8 @@ class Q_WebServer_Compat
 				$type = $tokens[$j][0];
 				if ($type === T_OBJECT_OPERATOR  // ->header()
 				 || $type === T_DOUBLE_COLON     // Class::header()
+				 || (defined('T_NULLSAFE_OBJECT_OPERATOR')
+					 && $type === T_NULLSAFE_OBJECT_OPERATOR)  // ?->header()
 				 || $type === T_FUNCTION          // function header()
 				 || $type === T_NEW               // new header()
 				) {
