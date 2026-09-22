@@ -508,6 +508,28 @@ class Q_WebServer_Http2_Connection
 			$list[] = array('content-length', (string) strlen($body));
 		}
 
+		// Cookies the script set, which do not arrive in $headers.
+		//
+		// A worker builds them with setcookie()/setrawcookie() in its own
+		// process, so the pooled response carries them separately -- $headers
+		// is associative and could not hold two Set-Cookie lines anyway. The
+		// HTTP/1.1 path has always merged this list in; this one never looked
+		// at it, so every cookie a script set was silently dropped over HTTP/2.
+		//
+		// Signing in was therefore impossible over HTTP/2: the login answered
+		// 302 to the right place and set no session, so the next request was
+		// anonymous again. Measured on the same login, same second: two
+		// Set-Cookie headers over HTTP/1.1 and none over HTTP/2.
+		//
+		// HPACK carries each as its own field, so unlike HTTP/1.1 there is
+		// nothing to fold or split here.
+		if (isset($response['cookies']) and is_array($response['cookies'])) {
+			foreach ($response['cookies'] as $cookie) {
+				if ($cookie === '' or $cookie === null) continue;
+				$list[] = array('set-cookie', (string) $cookie);
+			}
+		}
+
 		$block = $this->outbound->encode($list);
 
 		$first = substr($block, 0, $this->maxFrameSize);
