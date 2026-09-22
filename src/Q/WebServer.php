@@ -637,6 +637,40 @@ class Q_WebServer
 	 * @param {array} $request
 	 * @return {array|null}
 	 */
+	/**
+	 * Does this request path try to leave the document root?
+	 *
+	 * Judged on the decoded path and before it is turned into a filename, so
+	 * nothing is stat'd, opened or handed to realpath() on the strength of a
+	 * string a peer chose. Anything that reaches the filesystem at all has
+	 * already been decided about.
+	 *
+	 * Refuses any "..", not only a "../" that would resolve upwards. A file
+	 * legitimately named "notes..txt" is refused with it, which is a fair
+	 * trade: the cost is a filename nobody uses, and the alternative is
+	 * reasoning about how many ways a segment can be spelled.
+	 *
+	 * A null byte is refused for its own reason: PHP's string functions carry
+	 * it happily and the filesystem calls beneath them stop at it, so
+	 * "/safe.txt\0/../../etc/passwd" can pass a check as one path and open as
+	 * another.
+	 *
+	 * Extracted from http2Route so it can be tested against hostile input
+	 * without a socket, a certificate or a document root.
+	 *
+	 * @method pathEscapesRoot
+	 * @static
+	 * @param {string} $decoded a percent-decoded request path
+	 * @return {boolean} true when the request must be refused
+	 */
+	static function pathEscapesRoot($decoded)
+	{
+		if (!is_string($decoded) or $decoded === '') return true;
+		if (strpos($decoded, "\0") !== false) return true;
+		if (strpos($decoded, '..') !== false) return true;
+		return false;
+	}
+
 	static function http2Route($key, $request)
 	{
 		if (!isset(self::$http2[$key])) {
@@ -659,7 +693,7 @@ class Q_WebServer
 
 		// A path that climbs out of the document root is refused before it is
 		// touched, not after realpath() has been asked about it.
-		if (strpos($decoded, "\0") !== false or strpos($decoded, '..') !== false) {
+		if (self::pathEscapesRoot($decoded)) {
 			return array('status' => 400, 'headers' => array(), 'body' => 'Bad Request');
 		}
 
