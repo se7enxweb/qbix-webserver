@@ -40,6 +40,22 @@ class Q_WebServer_Http2_Connection
 	/** @var array stream id => state */
 	public $streams = array();
 
+	/**
+	 * Bytes written but not yet accepted by the socket.
+	 *
+	 * @property $outBuffer
+	 * @type {string}
+	 */
+	public $outBuffer = '';
+
+	/**
+	 * Watcher id while waiting for the socket to become writable, else null.
+	 *
+	 * @property $writeWatcher
+	 * @type {mixed}
+	 */
+	protected $writeWatcher = null;
+
 	/** @var integer the highest stream id the peer has opened */
 	public $lastStream = 0;
 
@@ -402,7 +418,6 @@ class Q_WebServer_Http2_Connection
 			$this->respond($stream, Q_WebServer_Http2_ErrorPage::response(
 				get_class($e) . ': ' . $e->getMessage(), $stream
 			));
-			unset($this->streams[$stream]);
 			return true;
 		}
 
@@ -433,7 +448,25 @@ class Q_WebServer_Http2_Connection
 		}
 
 		$this->respond($stream, $response);
-		unset($this->streams[$stream]);
+
+		// The stream is deliberately NOT forgotten here.
+		//
+		// respond() sends what the flow-control window allows and leaves the
+		// rest in the stream's 'pending', to go out when the peer grants more
+		// room. Dropping the stream at this point threw that remainder away
+		// along with the bookkeeping, so the WINDOW_UPDATE that arrived a
+		// moment later found nothing to resume and the body simply stopped --
+		// at exactly one window, every time, on a connection that stayed
+		// healthy enough to answer a PING in about a millisecond.
+		//
+		// It went unnoticed because curl and Chromium advertise a window large
+		// enough to swallow an entire response in one go. Firefox uses 128KB,
+		// so it truncated a 183KB script and reported
+		// NS_ERROR_NET_PARTIAL_TRANSFER, which is how this was found.
+		//
+		// flush() removes the stream itself once the last DATA frame carries
+		// END_STREAM, and respond() removes it for a response with no body, so
+		// nothing leaks by leaving it alone here.
 		return true;
 	}
 
@@ -662,13 +695,96 @@ class Q_WebServer_Http2_Connection
 	function write($data)
 	{
 		if (!is_resource($this->socket)) return false;
-		$total = strlen($data);
-		$written = 0;
-		while ($written < $total) {
-			$n = @fwrite($this->socket, substr($data, $written));
-			if ($n === false or $n === 0) return false;
-			$written += $n;
+		$this->outBuffer .= $data;
+		return $this->drain();
+	}
+
+	/**
+	 * Push as much of the output buffer onto the socket as it will take.
+	 *
+	 * The socket is non-blocking, because one event loop serves every
+	 * connection and no single peer may be allowed to stop the others. On a
+	 * non-blocking socket fwrite() writes what fits in the kernel send buffer
+	 * and returns a short count -- or 0 when that buffer is already full.
+	 *
+	 * Zero is not an error. It means "not now, ask again when the socket is
+	 * writable", and the previous code here treated it as fatal and returned,
+	 * abandoning every byte that had not gone out. Nothing on this machine ever
+	 * noticed: over loopback and on the LAN the peer drains faster than we can
+	 * fill, so the buffer never fills and the short-write path is never taken.
+	 * Across a real network it fills on any sizeable body, and the response
+	 * simply stopped part-way -- a browser reports that as
+	 * NS_ERROR_NET_PARTIAL_TRANSFER, with no error anywhere on the server.
+	 *
+	 * So what will not fit waits here, and a writability watcher sends it.
+	 *
+	 * @method drain
+	 * @return {boolean} false only on a genuinely broken socket
+	 */
+	function drain()
+	{
+		if (!is_resource($this->socket)) return false;
+
+		while ($this->outBuffer !== '') {
+			$n = @fwrite($this->socket, $this->outBuffer);
+
+			if ($n === false) {
+				// A broken pipe, as opposed to a full one.
+				return false;
+			}
+			if ($n === 0) {
+				// Full. Keep the rest and wait to be told there is room.
+				$this->watchWritable();
+				return true;
+			}
+			$this->outBuffer = substr($this->outBuffer, $n);
 		}
+
+		$this->unwatchWritable();
 		return true;
+	}
+
+	/**
+	 * Release anything the loop is holding for this connection.
+	 *
+	 * @method shutdown
+	 */
+	function shutdown()
+	{
+		$this->unwatchWritable();
+	}
+
+	/**
+	 * Ask the loop to call drain() when the socket can take more.
+	 *
+	 * @method watchWritable
+	 */
+	protected function watchWritable()
+	{
+		if ($this->writeWatcher !== null) return;
+		if (!class_exists('Q_Evented')) return;
+
+		$self = $this;
+		$this->writeWatcher = Q_Evented::onWritable(
+			$this->socket,
+			function () use ($self) { $self->drain(); }
+		);
+	}
+
+	/**
+	 * Stop being told about writability once there is nothing left to send.
+	 *
+	 * Left in place it would fire on every pass of the loop for the life of the
+	 * connection, since an idle socket is always writable.
+	 *
+	 * @method unwatchWritable
+	 */
+	protected function unwatchWritable()
+	{
+		if ($this->writeWatcher === null) return;
+		if (class_exists('Q_Evented')) {
+			Q_Evented::cancel($this->writeWatcher);
+		}
+		$this->writeWatcher = null;
 	}
 }

@@ -587,6 +587,12 @@ class Q_WebServer
 	 */
 	static function closeHttp2($key)
 	{
+		// Drop the writability watcher with the connection. An idle socket is
+		// always writable, so a watcher left behind would fire on every pass of
+		// the loop, forever, against a connection nobody is using.
+		if (isset(self::$http2[$key])) {
+			self::$http2[$key]->shutdown();
+		}
 		unset(self::$http2[$key]);
 		self::closeClient($key);
 	}
