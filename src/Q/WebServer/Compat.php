@@ -62,6 +62,9 @@ class Q_WebServer_Compat
 		'putenv'               => 'Q_WebServer_Compat::_putenv',
 	);
 
+	/** @var bool Whether the phar:// scheme is currently wrapped for transforms. */
+	private static $pharWrapped = false;
+
 	/** @var array In-memory transform cache: realpath → ['source' => ..., 'mtime' => ...] */
 	private static $transformCache = array();
 
@@ -167,6 +170,32 @@ class Q_WebServer_Compat
 		// Register custom include wrapper
 		stream_wrapper_unregister('file');
 		stream_wrapper_register('file', 'Q_WebServer_CompatFileWrapper');
+
+		// And for phar://, when an engine archive is in use.
+		//
+		// The transform is what makes header(), setcookie() and their kin work
+		// at all under the CLI SAPI, and it only reaches code that is included
+		// through a wrapped scheme. Code included from inside an archive went
+		// through phar:// instead, so none of it was rewritten: header() and
+		// setcookie() stayed the real PHP functions, which do nothing here.
+		//
+		// The result was a site that rendered the right page and sent almost
+		// no headers with it -- no Cache-Control, so nothing could be cached
+		// and every request was rendered -- and could not sign anybody in,
+		// because the session cookie was never sent. Nothing was logged,
+		// because nothing failed; the calls simply went nowhere.
+		// Read the environment, not the constant. The constant is defined by
+		// the application's own bootstrap, which runs when the front
+		// controller is included -- long after this. Checking it here was
+		// always false, so the wrapper was never installed and the fix did
+		// nothing at all.
+		$enginePhar = getenv('EXP_ENGINE_PHAR');
+		if (is_string($enginePhar) and $enginePhar !== ''
+		and in_array('phar', stream_get_wrappers(), true)) {
+			stream_wrapper_unregister('phar');
+			stream_wrapper_register('phar', 'Q_WebServer_CompatFileWrapper');
+			self::$pharWrapped = true;
+		}
 	}
 
 	/**
@@ -288,6 +317,18 @@ class Q_WebServer_Compat
 	 * Check if compat mode is active.
 	 * @return bool
 	 */
+	/**
+	 * Is the phar:// scheme currently wrapped for source transforms?
+	 *
+	 * @method pharWrapped
+	 * @static
+	 * @return {boolean}
+	 */
+	static function pharWrapped()
+	{
+		return self::$pharWrapped;
+	}
+
 	static function isEnabled()
 	{
 		return self::$enabled;
@@ -1888,11 +1929,18 @@ class Q_WebServer_CompatFileWrapper
 	private static function unwrap()
 	{
 		stream_wrapper_restore('file');
+		if (Q_WebServer_Compat::pharWrapped()) {
+			stream_wrapper_restore('phar');
+		}
 	}
 	private static function rewrap()
 	{
 		stream_wrapper_unregister('file');
 		stream_wrapper_register('file', __CLASS__);
+		if (Q_WebServer_Compat::pharWrapped()) {
+			stream_wrapper_unregister('phar');
+			stream_wrapper_register('phar', __CLASS__);
+		}
 	}
 
 	public function stream_open($path, $mode, $options, &$opened_path)
