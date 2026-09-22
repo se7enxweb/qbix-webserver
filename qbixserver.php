@@ -1198,12 +1198,41 @@ if ($opts['workers'] > 0) {
 
 			if ($safeWorkers < $opts['workers']) {
 				fwrite(STDERR, "  Requested {$opts['workers']} workers but system limits allow ~{$safeWorkers}.\n");
-				fwrite(STDERR, "  Start with {$safeWorkers} workers? [Y/n] ");
-				$answer = trim(fgets(STDIN));
-				if ($answer !== '' && strtolower($answer[0]) !== 'y') {
-					fwrite(STDERR, "  Aborted. Raise the limits above and try again.\n");
-					exit(1);
+
+				// Only ask when there is somebody to answer.
+				//
+				// A server is usually started by something that is not a
+				// person: systemd, a supervisor, a container entrypoint, a
+				// CI job. Reading a line from standard input in that
+				// situation is a gamble on what the parent did with the
+				// descriptor. Redirected from /dev/null it returns false at
+				// once and the start continues, which is why this is easy to
+				// miss. Left open and silent -- a pipe the supervisor holds,
+				// a socket-activated unit, an interactive shell that has
+				// moved on -- fgets() blocks and never returns. The server
+				// does not start, and the reason is a question sitting
+				// unanswered on stderr.
+				//
+				// So the prompt is for terminals. Everywhere else the safe
+				// count is taken and said out loud, because starting with
+				// fewer workers than asked for is a far smaller surprise
+				// than not starting at all.
+				$interactive = defined('STDIN')
+					&& (function_exists('stream_isatty') ? @stream_isatty(STDIN)
+						: (function_exists('posix_isatty') ? @posix_isatty(STDIN) : false));
+
+				if ($interactive) {
+					fwrite(STDERR, "  Start with {$safeWorkers} workers? [Y/n] ");
+					$answer = trim((string) fgets(STDIN));
+					if ($answer !== '' && strtolower($answer[0]) !== 'y') {
+						fwrite(STDERR, "  Aborted. Raise the limits above and try again.\n");
+						exit(1);
+					}
+				} else {
+					fwrite(STDERR, "  Standard input is not a terminal; starting with {$safeWorkers} workers.\n");
+					fwrite(STDERR, "  Raise the limits above, or pass --workers, to choose differently.\n");
 				}
+
 				$opts['workers'] = $safeWorkers;
 			}
 		}
