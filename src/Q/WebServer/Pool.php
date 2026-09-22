@@ -340,7 +340,28 @@ class Q_WebServer_Pool
 		$_SERVER['SCRIPT_NAME'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['PHP_SELF'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['DOCUMENT_ROOT'] = $req['documentRoot'] ?? '';
-		$_SERVER['SERVER_NAME'] = $req['headers']['host'] ?? 'localhost';
+		// SERVER_NAME is the host, without the port. SERVER_PORT is the port.
+		//
+		// Assigning the raw Host header here put "example.com:8080" in a
+		// variable every CGI-speaking application expects to be a bare
+		// hostname, and applications do arithmetic on it. One of them derived a
+		// request path by removing the server name from the front of a URL and
+		// was left holding ":8080/admin/setup/info", which it then stored as
+		// the page to return to after signing in -- so signing in landed on
+		// /admin/%3A8080/admin/setup/info and a 404.
+		//
+		// Split on the last colon so an IPv6 literal in brackets survives.
+		$host = (string) ($req['headers']['host'] ?? 'localhost');
+		if ($host === '') {
+			$host = 'localhost';
+		} else if ($host[0] === '[') {
+			$end = strpos($host, ']');
+			if ($end !== false) $host = substr($host, 0, $end + 1);
+		} else {
+			$colon = strrpos($host, ':');
+			if ($colon !== false) $host = substr($host, 0, $colon);
+		}
+		$_SERVER['SERVER_NAME'] = $host;
 		$_SERVER['SERVER_PORT'] = $req['serverPort'] ?? '8080';
 		$_SERVER['REMOTE_ADDR'] = $req['remoteAddr'] ?? '127.0.0.1';
 		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
@@ -1250,4 +1271,6 @@ class Q_WebServer_PhpInputStream
 		}
 		return true;
 	}
+
+
 }
