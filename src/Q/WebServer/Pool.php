@@ -183,6 +183,14 @@ class Q_WebServer_Pool
 				if (!$octane) break;
 				continue;
 			}
+			if (!empty($req['requestUndecodable'])) {
+				// The parent could not encode this request at all, so there
+				// is nothing to run. Say so, rather than running the payload
+				// that stands in for it and serving the wrong page.
+				self::writeMsg($socket, 400, 'Bad Request', array());
+				if (!$octane) break;
+				continue;
+			}
 
 			// Execute the PHP script
 			$resp = self::executeScript($req);
@@ -380,6 +388,13 @@ class Q_WebServer_Pool
 
 		$ct = strtolower($req['headers']['content-type'] ?? '');
 		$origCt = $req['headers']['content-type'] ?? '';
+		// Restore a body that had to be base64-encoded to survive the
+		// journey; see sendTo(). Done before anything looks at the body, so
+		// multipart parsing and php://input both see the original bytes.
+		if (!empty($req['bodyB64'])) {
+			$req['body'] = base64_decode($req['bodyB64']);
+		}
+
 		$raw = $req['body'] ?? '';
 		if (strpos($ct, 'application/x-www-form-urlencoded') !== false) {
 			parse_str($raw, $_POST);
@@ -498,7 +513,7 @@ class Q_WebServer_Pool
 			Q_Evented::enable($this->watchers[$index]);
 		}
 
-		$msg = json_encode(array(
+		$payload = array(
 			'method'         => $parsed['method'],
 			'uri'            => $parsed['uri'],
 			'path'           => $parsed['path'],
@@ -511,7 +526,40 @@ class Q_WebServer_Pool
 			'documentRoot'   => Q_WebServer::$rootDir ?? '',
 			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
 			'remoteAddr'     => '127.0.0.1'
-		));
+		);
+		$msg = json_encode($payload);
+		// A request body that is not valid UTF-8 cannot go through
+		// json_encode(), which returns false for it. strlen(false) is 0, so
+		// the frame went out as a length prefix of zero and nothing else; the
+		// worker read an empty message, could not decode it, and answered
+		// "Bad message" with a 500.
+		//
+		// Every file upload is exactly that. An image, a PDF, a zip -- any
+		// multipart POST carrying bytes rather than text -- failed before the
+		// application saw it. In a browser the upload simply never completes:
+		// the editor's progress dialog waits for a result it will never be
+		// given.
+		//
+		// Base64 carries those bytes, and only those: a text body keeps its
+		// exact previous shape and cost. This mirrors what writeMsg() does in
+		// the other direction, and uses the same flag.
+		if ($msg === false) {
+			$payload['bodyB64'] = base64_encode((string) $payload['body']);
+			$payload['body'] = '';
+			$msg = json_encode($payload);
+		}
+
+		if ($msg === false) {
+			// Something other than the body cannot be encoded. Fail this one
+			// request rather than sending a frame the worker cannot read.
+			$msg = json_encode(array(
+				'method' => 'GET', 'uri' => '/', 'path' => '/', 'query' => '',
+				'headers' => array(), 'rawHeaders' => array(), 'body' => '',
+				'scriptFilename' => '', 'scriptName' => '',
+				'requestUndecodable' => true
+			));
+		}
+
 		$written = @fwrite($this->workers[$index]['socket'], pack('N', strlen($msg)) . $msg);
 		if ($written === false || $written === 0) {
 			// Worker died before receiving the request — recycle and re-queue
