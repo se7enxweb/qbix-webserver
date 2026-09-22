@@ -868,6 +868,21 @@ bold "╔═══════════════════════�
 bold "║  Qbix Server — Test Suite                ║"
 bold "╚══════════════════════════════════════════╝"
 
+# ── Unit tests ───────────────────────────────────────
+#
+# Run before the server starts, because there is no sense binding a port to
+# discover the frame codec is broken. These need nothing installed but PHP:
+# no socket, no certificate, no fixture directory. They are also the half that
+# can run in CI on a machine with no network.
+echo
+bold "Unit tests (no server required)"
+if php "$SCRIPT_DIR/run-unit.php"; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    ERRORS="${ERRORS}\n  unit tests failed — see above"
+fi
+
 start_server
 
 case "${1:-all}" in
