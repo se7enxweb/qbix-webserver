@@ -455,6 +455,24 @@ prints each path with its owner and mode, whether it passes and why not, and the
 commands that fix it; it exits 1 when the panel is locked. `--json` gives the same
 as JSON.
 
+**The panel's settings.** The folder of applications (`appsDir`), the autohost
+settings and the domain records live in `acl/panel.json` too, and every change to
+them -- from the panel, the API or an autohosted domain -- is made under the store's
+lock and renamed into place, so two workers saving different settings at once keep
+both. The application files the panel edits (an app's `local/app.json`,
+`local/paths.json`, `config/deploy.json`) are changed the same way, under a lock
+beside each file.
+
+**The shell's files.** The shell keeps its history, aliases and scripts in
+`<state dir>/shell` (`/var/lib/qbix/shell`), beside `sessions/`. Files left in the
+old place (`local/shell` above the document root) are brought over once, when the
+shell first needs them: the two histories are merged (the older file's lines first),
+aliases are merged (the newer file wins a clash), missing scripts are copied, and a
+script that is newer in the old place is kept beside the current one as
+`<name>.legacy`. The old directory is left as it was, with a `.moved` note naming
+where its files went. It is only read if it passes the same trust rule.
+
+
 **Moving from `local/panel.json`.** A `panel.json` left in the old place (above the
 document root) is moved into `acl/` and `sessions/` once, on the server's first
 start (or the first `panel:check`/`panel:password`), provided it belongs to the

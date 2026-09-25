@@ -51,13 +51,10 @@ class Q_WebServer_Autohost
 		$domains = Q_Config::get('Q', 'webserver', 'domains', []);
 		if (isset($domains[$hostname])) return true;
 
-		// Check panel config
-		$panelConfig = Q_WebServer_Panel::panelConfigPath();
-		if (is_file($panelConfig)) {
-			$pc = json_decode(file_get_contents($panelConfig), true);
-			if (isset($pc['domains'][$hostname])) return true;
-		}
-		return false;
+		// Check the panel's store
+		$panelDomains = class_exists('Q_WebServer_Panel_Store')
+			? Q_WebServer_Panel_Store::setting('domains', []) : [];
+		return is_array($panelDomains) && isset($panelDomains[$hostname]);
 	}
 
 	/**
@@ -363,20 +360,15 @@ class Q_WebServer_Autohost
 		$defaultRoot = Q_Config::get('Q', 'webserver', 'autohost', 'defaultRoot', null);
 		$defaultApp = Q_Config::get('Q', 'webserver', 'autohost', 'defaultApp', null);
 
-		$configPath = class_exists('Q_WebServer_Panel')
-			? Q_WebServer_Panel::panelConfigPath()
-			: 'local/panel.json';
-
-		$config = is_file($configPath)
-			? json_decode(file_get_contents($configPath), true) : [];
-
 		$domainConf = ['tls' => $email ? 'auto' : ''];
 		if ($defaultRoot) $domainConf['root'] = $defaultRoot;
 		if ($defaultApp) $domainConf['app'] = $defaultApp;
 
-		$config['domains'][$hostname] = $domainConf;
-		@mkdir(dirname($configPath), 0755, true);
-		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		// Into the panel's store, under its lock: a record the panel already
+		// holds for this host keeps its other fields.
+		Q_WebServer_Domains::update($hostname, function (array $old) use ($domainConf) {
+			return array_merge($old, $domainConf);
+		});
 
 		// Write to autohost log file
 		$logFile = Q_Config::get('Q', 'webserver', 'autohost', 'log', qbix_data_path('local/autohost.log'));

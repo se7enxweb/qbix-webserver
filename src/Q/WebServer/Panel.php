@@ -560,22 +560,19 @@ class Q_WebServer_Panel
 		@mkdir($localDir, 0755, true);
 		$localFile = $localDir . DS . 'app.json';
 
-		$config = array();
-		if (is_file($localFile)) {
-			$config = json_decode(file_get_contents($localFile), true) ?: array();
-		}
-
-		if ($forkMode === null || $forkMode === 'auto') {
-			// Remove the setting (use server default)
-			unset($config['Q']['webserver']['forkPerRequest']);
-			// Clean up empty nesting
-			if (empty($config['Q']['webserver'])) unset($config['Q']['webserver']);
-			if (empty($config['Q'])) unset($config['Q']);
-		} else {
-			$config['Q']['webserver']['forkPerRequest'] = (bool) $forkMode;
-		}
-
-		file_put_contents($localFile, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		$ok = Q_WebServer_Panel_Store::fileUpdate($localFile, function (array $config) use ($forkMode) {
+			if ($forkMode === null || $forkMode === 'auto') {
+				// Remove the setting (use server default)
+				unset($config['Q']['webserver']['forkPerRequest']);
+				// Clean up empty nesting
+				if (empty($config['Q']['webserver'])) unset($config['Q']['webserver']);
+				if (empty($config['Q'])) unset($config['Q']);
+			} else {
+				$config['Q']['webserver']['forkPerRequest'] = (bool) $forkMode;
+			}
+			return $config;
+		});
+		if ($ok === false) return array('status' => 500, 'error' => 'Cannot write ' . $localFile);
 		return array('ok' => true, 'forkPerRequest' => $forkMode, 'note' => 'Restart the server for changes to take effect.');
 	}
 
@@ -834,15 +831,18 @@ class Q_WebServer_Panel
 		if (!$name) return array('status' => 400, 'error' => 'Name required');
 		if (empty($body['host'])) return array('status' => 400, 'error' => 'Host required');
 
-		$config = self::deployConfig();
-		$config['targets'][$name] = array(
+		$target = array(
 			'host' => $body['host'],
 			'user' => $body['user'] ?? 'deploy',
 			'path' => $body['path'] ?? '/var/www/' . $name,
 			'key' => $body['key'] ?? '',
 			'dirs' => array('web', 'handlers', 'classes', 'config'),
 		);
-		self::saveDeployConfig($config);
+		$ok = self::updateDeployConfig(function (array $config) use ($name, $target) {
+			$config['targets'][$name] = $target;
+			return $config;
+		});
+		if ($ok === false) return array('status' => 500, 'error' => 'Cannot write ' . self::deployConfigPath());
 		return array('ok' => true, 'name' => $name);
 	}
 
@@ -850,9 +850,11 @@ class Q_WebServer_Panel
 	{
 		$body = json_decode($parsed['body'], true);
 		$name = $body['name'] ?? '';
-		$config = self::deployConfig();
-		unset($config['targets'][$name]);
-		self::saveDeployConfig($config);
+		$ok = self::updateDeployConfig(function (array $config) use ($name) {
+			unset($config['targets'][$name]);
+			return $config;
+		});
+		if ($ok === false) return array('status' => 500, 'error' => 'Cannot write ' . self::deployConfigPath());
 		return array('ok' => true);
 	}
 
@@ -901,12 +903,13 @@ class Q_WebServer_Panel
 		return file_exists($path) ? json_decode(file_get_contents($path), true) : array('targets' => array());
 	}
 
-	private static function saveDeployConfig($config)
+	/** Change config/deploy.json under its lock: $fn gets and returns the array. */
+	private static function updateDeployConfig(callable $fn)
 	{
-		$path = self::deployConfigPath();
-		$dir = dirname($path);
-		if (!is_dir($dir)) @mkdir($dir, 0755, true);
-		file_put_contents($path, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		return Q_WebServer_Panel_Store::fileUpdate(self::deployConfigPath(), function (array $c) use ($fn) {
+			if (!isset($c['targets']) || !is_array($c['targets'])) $c['targets'] = array();
+			return $fn($c);
+		});
 	}
 
 	/**
@@ -1126,10 +1129,10 @@ class Q_WebServer_Panel
 			if (is_dir($platformPath . DS . 'platform')) {
 				$platformPath = $platformPath . DS . 'platform';
 			}
-			$paths = file_exists($pathsFile)
-				? json_decode(file_get_contents($pathsFile), true) : array();
-			$paths['platform'] = $platformPath;
-			file_put_contents($pathsFile, json_encode($paths, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+			Q_WebServer_Panel_Store::fileUpdate($pathsFile, function (array $paths) use ($platformPath) {
+				$paths['platform'] = $platformPath;
+				return $paths;
+			});
 		}
 
 		return array(
@@ -1184,13 +1187,10 @@ class Q_WebServer_Panel
 		}
 		// Persist in config
 		Q_Config::set('Q', 'webserver', 'panel', 'appsDir', realpath($dir));
-		// Also save to panel config file
-		$configPath = self::panelConfigPath();
-		$config = file_exists($configPath) ? json_decode(file_get_contents($configPath), true) : array();
-		$config['appsDir'] = realpath($dir);
-		$d = dirname($configPath);
-		if (!is_dir($d)) @mkdir($d, 0700, true);
-		@file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		// Also keep it in the panel's store
+		if (!Q_WebServer_Panel_Store::settingSet('appsDir', realpath($dir))) {
+			return array('status' => 503, 'error' => 'The panel store cannot be written; the folder is used until the server restarts.');
+		}
 		return array('ok' => true, 'appsDir' => realpath($dir));
 	}
 
@@ -2646,12 +2646,9 @@ class Q_WebServer_Panel
 
 		// Cross-reference with configured domains
 		$domains = Q_Config::get('Q', 'webserver', 'domains', array());
-		$configPath = self::panelConfigPath();
-		if (file_exists($configPath)) {
-			$panelConfig = json_decode(file_get_contents($configPath), true);
-			if (!empty($panelConfig['domains'])) {
-				$domains = array_merge($domains, $panelConfig['domains']);
-			}
+		$panelDomains = Q_WebServer_Panel_Store::setting('domains', array());
+		if (!empty($panelDomains) && is_array($panelDomains)) {
+			$domains = array_merge($domains, $panelDomains);
 		}
 
 		$mapped = [];
@@ -2796,29 +2793,23 @@ class Q_WebServer_Panel
 	static function apiAutohostToggle($parsed)
 	{
 		$body = json_decode($parsed['body'] ?? '{}', true);
-		$configPath = self::panelConfigPath();
-		$config = is_file($configPath)
-			? json_decode(file_get_contents($configPath), true) : [];
-
-		if (isset($body['enabled'])) {
-			$config['autohost']['enabled'] = (bool) $body['enabled'];
-		}
-		if (isset($body['authorize'])) {
-			$config['autohost']['authorize'] = $body['authorize'];
-		}
-		if (isset($body['dnsCheck'])) {
-			$config['autohost']['dnsCheck'] = (bool) $body['dnsCheck'];
-		}
-		if (isset($body['acmeEmail'])) {
-			$config['autohost']['acmeEmail'] = $body['acmeEmail'];
-		}
-		if (isset($body['allowlist'])) {
-			$config['autohost']['allowlist'] = array_values(array_filter(
-				array_map('trim', explode("\n", $body['allowlist']))
-			));
-		}
-
-		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		$autohost = null;
+		$ok = Q_WebServer_Panel_Store::aclUpdate(function (array $config) use ($body, &$autohost) {
+			$a = (isset($config['autohost']) && is_array($config['autohost'])) ? $config['autohost'] : array();
+			if (isset($body['enabled'])) $a['enabled'] = (bool) $body['enabled'];
+			if (isset($body['authorize'])) $a['authorize'] = $body['authorize'];
+			if (isset($body['dnsCheck'])) $a['dnsCheck'] = (bool) $body['dnsCheck'];
+			if (isset($body['acmeEmail'])) $a['acmeEmail'] = $body['acmeEmail'];
+			if (isset($body['allowlist'])) {
+				$a['allowlist'] = array_values(array_filter(
+					array_map('trim', explode("\n", (string) $body['allowlist']))
+				));
+			}
+			$config['autohost'] = $autohost = $a;
+			return $config;
+		});
+		if (!$ok) return ['status' => 503, 'error' => 'The panel store cannot be written.'];
+		$config = ['autohost' => $autohost];
 
 		// Apply to runtime config
 		foreach ($config['autohost'] ?? [] as $k => $v) {
@@ -3053,13 +3044,8 @@ class Q_WebServer_Panel
 		$dir = Q_Config::get('Q', 'webserver', 'panel', 'appsDir', null);
 		if ($dir && is_dir($dir)) return $dir;
 		// 2. Saved in panel config file
-		$configPath = self::panelConfigPath();
-		if (file_exists($configPath)) {
-			$config = json_decode(file_get_contents($configPath), true);
-			if (!empty($config['appsDir']) && is_dir($config['appsDir'])) {
-				return $config['appsDir'];
-			}
-		}
+		$saved = Q_WebServer_Panel_Store::setting('appsDir');
+		if (!empty($saved) && is_string($saved) && is_dir($saved)) return $saved;
 		// 3. Platform mode: parent of APP_DIR
 		if (defined('APP_DIR')) return dirname(APP_DIR);
 		return null;

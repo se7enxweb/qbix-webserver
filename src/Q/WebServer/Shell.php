@@ -88,7 +88,101 @@ class Q_WebServer_Shell
 		$sessions = (class_exists('Q_WebServer_Panel_Store') and (defined('APP_DIR') or function_exists('qbix_data_path')))
 			? Q_WebServer_Panel_Store::dirs()['sessions'] : null;
 		$base = $sessions ? dirname($sessions) : sys_get_temp_dir();
-		return $base . DIRECTORY_SEPARATOR . 'shell';
+		$dir = $base . DIRECTORY_SEPARATOR . 'shell';
+		if ($sessions and !isset(self::$moved[$dir])) {
+			self::$moved[$dir] = true;
+			self::moveLegacyData($dir);
+		}
+		return $dir;
+	}
+
+	/** @var array data dirs whose old files have been looked at in this process */
+	protected static $moved = array();
+
+	/** @var array the last moveLegacyData() result */
+	static $lastMove = array();
+
+	/**
+	 * Bring the shell's files from where they were kept before the panel's
+	 * store (APP_DIR/local/shell) into $dir, once. Nothing is lost and the
+	 * old directory is left as it was, as a copy, with a note naming where
+	 * its files went (which also stops this running again):
+	 *
+	 *   history       merged: the older file's lines first, the newer's after
+	 *   aliases.json  merged: on a clash the newer file's alias wins
+	 *   anything else copied when $dir has no such file; when it has one and
+	 *                 the old copy is newer, the old one is kept beside it
+	 *                 as <name>.legacy
+	 *
+	 * Both directories must pass the store's rule (the server's own, closed
+	 * to others, no link on the way), and so must every file read.
+	 * @method moveLegacyData
+	 * @static
+	 * @param {string} $dir the data directory
+	 * @param {string} [$old] default APP_DIR/local/shell
+	 * @return {array} moved (bool), files (names), why (when not moved)
+	 */
+	static function moveLegacyData($dir, $old = null)
+	{
+		$old = rtrim($old ?? dirname(Q_WebServer_Panel_Store::legacyFile()) . '/shell', '/');
+		$dir = rtrim($dir, '/');
+		$r = array('moved' => false, 'files' => array(), 'from' => $old, 'to' => $dir, 'why' => null);
+		$note = $old . '/.moved';
+		if (!is_dir($old) or is_file($note)) return self::$lastMove = $r;
+		if (realpath($old) === realpath($dir)) return self::$lastMove = $r;
+		$why = null;
+		if (!Q_WebServer_Panel_Store::dirTrusted($old, false, $why)
+		 or !Q_WebServer_Panel_Store::dirTrusted($dir, true, $why)) {
+			$r['why'] = $why;
+			return self::$lastMove = $r;
+		}
+		foreach ((array) @scandir($old) as $name) {
+			$name = (string) $name;
+			if ($name === '' or $name[0] === '.' or $name === '..') continue;
+			$src = $old . '/' . $name;
+			$dst = $dir . '/' . $name;
+			if (!Q_WebServer_Panel_Store::fileTrusted($src, $why) or !is_file($src)
+			 or !Q_WebServer_Panel_Store::fileTrusted($dst, $why)) continue;
+			$srcTime = (int) @filemtime($src);
+			$dstTime = is_file($dst) ? (int) @filemtime($dst) : 0;
+			$text = (string) @file_get_contents($src);
+			if (!is_file($dst)) {
+				$out = $text;
+			} elseif ($name === 'history') {
+				$split = function ($t) { return array_values(array_filter(explode("\n", $t), 'strlen')); };
+				$a = $split($text);
+				$b = $split((string) @file_get_contents($dst));
+				if ($srcTime > $dstTime) list($a, $b) = array($b, $a);
+				$lines = array();
+				foreach (array_merge($a, $b) as $l) if (!$lines or end($lines) !== $l) $lines[] = $l;
+				$lines = array_slice($lines, -Q_WebServer_Shell_History::MAX);
+				$out = $lines ? implode("\n", $lines) . "\n" : '';
+			} elseif ($name === 'aliases.json') {
+				$a = json_decode($text, true);
+				$b = json_decode((string) @file_get_contents($dst), true);
+				$a = is_array($a) ? $a : array();
+				$b = is_array($b) ? $b : array();
+				$m = $srcTime > $dstTime ? array_merge($b, $a) : array_merge($a, $b);
+				$out = json_encode($m, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+			} elseif ($srcTime > $dstTime and $text !== (string) @file_get_contents($dst)) {
+				$dst .= '.legacy';
+				$out = $text;
+			} else {
+				continue;
+			}
+			$tmp = $dir . '/.' . basename($dst) . '.' . getmypid() . '.tmp';
+			$um = umask(077);
+			$ok = @file_put_contents($tmp, $out) !== false;
+			umask($um);
+			if ($ok) { @chmod($tmp, 0600); $ok = @rename($tmp, $dst); }
+			if (!$ok) { @unlink($tmp); continue; }
+			@touch($dst, max($srcTime, $dstTime));
+			$r['files'][] = basename($dst);
+		}
+		@file_put_contents($note, 'Moved to ' . $dir . ' on ' . date('c') . "; these files are the copy left behind.\n");
+		@chmod($note, 0600);
+		$r['moved'] = true;
+		return self::$lastMove = $r;
 	}
 
 

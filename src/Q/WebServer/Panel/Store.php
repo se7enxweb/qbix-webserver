@@ -362,6 +362,61 @@ class Q_WebServer_Panel_Store
 		});
 	}
 
+	// ── The panel's settings ────────────────────────────────────────────
+
+	/**
+	 * One of the panel's own settings (appsDir, autohost, domains...), kept
+	 * in acl/panel.json beside the credentials.
+	 * @return {mixed} $default when unset or when the store is not trusted
+	 */
+	static function setting($key, $default = null)
+	{
+		$c = self::aclLoad();
+		return array_key_exists($key, $c) ? $c[$key] : $default;
+	}
+
+	/**
+	 * Set one of the panel's settings (null removes it), under the store's
+	 * lock, so two workers saving different settings at once keep both.
+	 * @return {bool}
+	 */
+	static function settingSet($key, $value)
+	{
+		return self::aclUpdate(function (array $c) use ($key, $value) {
+			if ($value === null) unset($c[$key]); else $c[$key] = $value;
+			return $c;
+		});
+	}
+
+	/**
+	 * Change a JSON file outside the store (an application's local/app.json,
+	 * config/deploy.json...) the same way: under a lock beside it, read,
+	 * changed by $fn, written beside it and renamed into place, so a
+	 * concurrent change is never lost and a reader never sees it half written.
+	 * The file keeps its mode ($mode for a new one).
+	 * @return {array|false} what was written
+	 */
+	static function fileUpdate($file, callable $fn, $mode = 0644)
+	{
+		$dir = dirname($file);
+		if (!is_dir($dir) and !@mkdir($dir, 0755, true) and !is_dir($dir)) return false;
+		$h = @fopen($file . '.lock', 'c');
+		if ($h) flock($h, LOCK_EX);
+		try {
+			$data = is_file($file) ? json_decode((string) @file_get_contents($file), true) : array();
+			$data = $fn(is_array($data) ? $data : array());
+			if (!is_array($data)) return false;
+			$keep = is_file($file) ? (fileperms($file) & 0777) : $mode;
+			$tmp = $dir . '/.' . basename($file) . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
+			if (@file_put_contents($tmp, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) === false) return false;
+			@chmod($tmp, $keep);
+			if (!@rename($tmp, $file)) { @unlink($tmp); return false; }
+			return $data;
+		} finally {
+			if ($h) { flock($h, LOCK_UN); fclose($h); }
+		}
+	}
+
 	// ── Sessions ────────────────────────────────────────────────────────
 
 	/** A live session, or null (expired ones are removed). */
