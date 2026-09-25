@@ -199,7 +199,7 @@ Existing domains keep the roots they have; nothing is migrated.
 | `redirects` | `{ https, preferredHost: "www"\|"bare", rules: [{ match, from, to, code, keepQuery }] }` |
 | `hsts` | `{ enabled, maxAge, includeSubDomains }` |
 | `errorDocs` | `{ "404": "errors/404.html", ... }` for 403, 404, 500, 503 |
-| reserved | `certificate` |
+| `certificate` | `{ acme: true, names: [...] }`: this server issues the domain's certificate; `names` are the host names asked for with it |
 
 Unknown fields are kept when a record is updated, so later versions can add
 to it without migrating anything.
@@ -247,8 +247,34 @@ with the reason. Switching on the HTTPS redirect or HSTS answers 409 until it is
 sent again with `confirm`, since browsers remember both (HSTS for `maxAge`
 seconds).
 
-**Planned** (not built yet): issuing and renewing a certificate for one
-domain; per-domain logs and traffic. Further out: password-protected
+**Certificate.** Each domain card shows the certificate the HTTPS listener
+presents: issuer, the names on it, valid from and to, days left, whether it is
+self-signed, and a tick or cross for each of the domain's host names (itself,
+its aliases and subdomains). It warns when the certificate expires within 21
+days or has expired, when it is self-signed, when nothing is served, and when a
+host name is not covered.
+
+**Issue / renew for this domain** asks the ACME certificate authority for a
+certificate that names the configured names plus this domain and its aliases,
+the configured first name kept first so the certificate being served is the one
+that is replaced. It runs as a background job, like every issuance (see
+[HTTPS](https.md)); the card shows it queued, running, issued, or failed with
+the reason and the next try, and the new certificate is swapped into the
+listener without a restart. The domain is remembered in its record
+(`certificate`), so later renewals keep naming it. Each name must reach this
+server over HTTP for the challenge, which is why the request is confirmed
+first. It is only offered in the `acme` (`letsencrypt`) mode: with certificate
+files managed elsewhere (`manual`, `files`, `archive`, `pkcs12`), `certbot`,
+`remote` or `self-signed`, the card says why it cannot issue and what to change.
+
+API (signed in): `GET domains/cert?domain=…` (the report), `POST domains/cert/issue
+{domain, confirm}` (202 with a job id; 409 until confirmed; 400 when the mode
+cannot issue; `domains/provision` is the older name), `GET domains/cert/job?id=…`
+(`state`: queued, running, succeeded or failed, with `error` and `nextAttempt`).
+The inspection and job status live in `Q_WebServer_Certificate_Inspector`, for
+the SSL view to reuse.
+
+**Planned** (not built yet): per-domain logs and traffic. Further out: password-protected
 directories, hotlink protection, a PHP version and settings per domain, limits,
 quotas and disk usage, backups, web statistics history, IP address assignment,
 a read-only DNS view, cron per domain, and a file manager.

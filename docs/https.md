@@ -214,6 +214,11 @@ and `Q.webserver.tls.acmeEmail`, `certDir`, `acmeStaging` with
 
 ### Let's Encrypt and other ACME CAs
 
+The control panel's Domains tab can also issue for one domain at a time: it
+shows the certificate covering each domain and adds the domain (and its
+aliases) to the names asked for, as a background job, and later renewals keep
+them. See [Dashboard & Panel](dashboard.md), Domains tab, "Certificate".
+
 #### What you need
 
 - **The names resolve to this server.** Check with `dig +short example.com`.

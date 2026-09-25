@@ -138,6 +138,26 @@ class Q_WebServer_Domains
 	}
 
 	/**
+	 * The host names whose certificate this server issues itself: every
+	 * record marked certificate.acme, with its aliases. Q_WebServer_Acme
+	 * adds them to the configured names, so a renewal keeps them.
+	 * @return {array}
+	 */
+	static function acmeHosts()
+	{
+		$out = array();
+		foreach (self::records() as $name => $rec) {
+			if (empty($rec['certificate']['acme'])) continue;
+			$names = array_merge(array($name), (array) ($rec['certificate']['names'] ?? array()), (array) ($rec['aliases'] ?? array()));
+			foreach ($names as $h) {
+				$h = self::normalize($h);
+				if ($h !== '' and self::validName($h) and !in_array($h, $out, true)) $out[] = $h;
+			}
+		}
+		return $out;
+	}
+
+	/**
 	 * Change one panel record under the store's lock: $fn gets the record
 	 * (or an empty array) and returns it, or null to delete it.
 	 * @return {bool}

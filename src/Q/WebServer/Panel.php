@@ -349,8 +349,13 @@ class Q_WebServer_Panel
 				return self::apiDomainErrorDocs($parsed);
 			case 'domains/defaults':
 				return self::apiDomainDefaults($parsed);
+			case 'domains/cert':
+				return self::apiDomainCert($parsed);
+			case 'domains/cert/issue':
 			case 'domains/provision':
-				return self::apiProvisionCert($parsed);
+				return self::apiDomainCertIssue($parsed);
+			case 'domains/cert/job':
+				return self::apiDomainCertJob($parsed);
 			case 'domains/hosts':
 				return self::apiHostsFile();
 			case 'domains/hosts/add':
@@ -2489,24 +2494,68 @@ class Q_WebServer_Panel
 		return ['domain' => $domain, 'errorDocs' => $docs ? $docs : null];
 	}
 
-	static function apiProvisionCert($parsed)
+	/** The host names a domain answers to: itself, its aliases, its subdomains. */
+	private static function domainHosts($domain, array $rec)
+	{
+		$hosts = array($domain);
+		foreach ((array) ($rec['aliases'] ?? array()) as $a) $hosts[] = Q_WebServer_Domains::normalize($a);
+		foreach (array_keys((array) ($rec['subdomains'] ?? array())) as $s) $hosts[] = strtolower($s) . '.' . $domain;
+		return array_values(array_unique(array_filter($hosts)));
+	}
+
+	/** A value from the request's query, whether it arrived parsed or as a string. */
+	private static function queryValue($parsed, $name)
+	{
+		$q = $parsed['query'] ?? array();
+		if (is_string($q)) { $s = array(); parse_str($q, $s); $q = $s; }
+		return isset($q[$name]) && is_string($q[$name]) ? $q[$name] : '';
+	}
+
+	/** GET domains/cert?domain=… -- the certificate covering a domain, and whether it can be issued here. */
+	static function apiDomainCert($parsed)
+	{
+		$domain = Q_WebServer_Domains::normalize(self::queryValue($parsed, 'domain'));
+		if (!Q_WebServer_Domains::validName($domain)) return ['status' => 400, 'error' => 'Invalid domain name'];
+		$records = Q_WebServer_Domains::records();
+		if (!isset($records[$domain])) return ['status' => 404, 'error' => "No domain $domain"];
+		$config = (array) Q_Config::get('Q', 'web', 'https', array());
+		return Q_WebServer_Certificate_Inspector::forDomain($domain, self::domainHosts($domain, $records[$domain]), $config);
+	}
+
+	/**
+	 * POST domains/cert/issue {domain, confirm} -- issue or renew a certificate
+	 * that covers the domain and its aliases, as a background job; poll
+	 * domains/cert/job for the outcome. domains/provision is the old name.
+	 */
+	static function apiDomainCertIssue($parsed)
 	{
 		$body = json_decode($parsed['body'] ?? '{}', true);
-		$domain = $body['domain'] ?? '';
-		if (!$domain) return ['status' => 400, 'error' => 'Missing domain'];
+		if (!is_array($body)) return ['status' => 400, 'error' => 'The body must be a JSON object'];
+		$domain = Q_WebServer_Domains::normalize($body['domain'] ?? '');
+		if (!Q_WebServer_Domains::validName($domain)) return ['status' => 400, 'error' => 'Invalid domain name'];
+		$records = Q_WebServer_Domains::records();
+		if (!isset($records[$domain])) return ['status' => 404, 'error' => "No domain $domain"];
+		$config = (array) Q_Config::get('Q', 'web', 'https', array());
+		$why = '';
+		if (!Q_WebServer_Certificate_Inspector::canIssue($config, $why)) return ['status' => 400, 'error' => $why];
+		$aliases = array_values(array_filter(array_map(array('Q_WebServer_Domains', 'normalize'), (array) ($records[$domain]['aliases'] ?? array()))));
+		if (empty($body['confirm'])) {
+			$names = Q_WebServer_Certificate_Inspector::issueConfig($config, $domain, $aliases)['acme']['domains'];
+			return ['status' => 409, 'confirm' => true, 'names' => $names,
+				'error' => 'This asks the certificate authority for a certificate naming ' . implode(', ', $names)
+					. '; each of them must reach this server over HTTP for the challenge. Send confirm to proceed'];
+		}
+		$r = Q_WebServer_Certificate_Inspector::startIssue($domain, $aliases, $config, null, $why);
+		if (!$r) return ['status' => 400, 'error' => $why];
+		return ['status' => 202] + $r;
+	}
 
-		$email = Q_Config::get('Q', 'webserver', 'tls', 'acmeEmail', '');
-		if (!$email) return ['status' => 400, 'error' => 'Set Q.webserver.tls.acmeEmail first'];
-
-		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
-		$staging = (bool) Q_Config::get('Q', 'webserver', 'tls', 'acmeStaging', false);
-
-		$domains = [$domain];
-		$conf = Q_Config::get('Q', 'webserver', 'domains', $domain, []);
-		if (!empty($conf['aliases'])) $domains = array_merge($domains, $conf['aliases']);
-
-		$result = Q_WebServer_Acme::provision($domains, $certDir, $email, $staging);
-		return $result;
+	/** GET domains/cert/job?id=… -- a certificate job's status: queued, running, succeeded, failed. */
+	static function apiDomainCertJob($parsed)
+	{
+		$file = Q_WebServer_Certificate_Inspector::jobFile(self::queryValue($parsed, 'id'));
+		if (!$file) return ['status' => 404, 'error' => 'No such certificate job'];
+		return array('job' => Q_WebServer_Certificate_Inspector::jobId($file)) + Q_WebServer_Certificate_Inspector::jobStatus($file);
 	}
 
 	// ── Hosts File API ──────────────────────────────────

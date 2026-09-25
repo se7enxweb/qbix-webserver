@@ -104,8 +104,17 @@ class Q_WebServer_Acme
 	static function domains(array $config)
 	{
 		$acme = isset($config['acme']) ? (array) $config['acme'] : array();
-		if (!empty($acme['domains'])) return array_values(array_unique(array_map('strtolower', (array) $acme['domains'])));
-		return empty($config['domain']) ? array() : array(strtolower($config['domain']));
+		if (!empty($acme['domains'])) $names = array_values(array_unique(array_map('strtolower', (array) $acme['domains'])));
+		else $names = empty($config['domain']) ? array() : array(strtolower($config['domain']));
+		// Domains the panel was asked to certify (Q_WebServer_Certificate_Inspector),
+		// so a renewal keeps them. The configured first name stays first: it
+		// names the files the listener serves.
+		if (class_exists('Q_WebServer_Domains') and method_exists('Q_WebServer_Domains', 'acmeHosts')) {
+			foreach (Q_WebServer_Domains::acmeHosts() as $h) {
+				if (!in_array($h, $names, true)) $names[] = $h;
+			}
+		}
+		return $names;
 	}
 
 	/**

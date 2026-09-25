@@ -943,19 +943,13 @@ async function loadDomains() {
     domainCache = {};
     r.domains.forEach(function(d) { domainCache[d.domain] = d; });
     el.innerHTML = r.domains.map(function(d) {
-      var badge = d.certStatus === 'valid' ? '<span style="color:var(--grn)">\u2713 valid</span>'
-        : d.certStatus === 'expiring' ? '<span style="color:var(--yel)">\u26a0 ' + d.certDaysLeft + ' days</span>'
-        : d.certStatus === 'expired' ? '<span style="color:var(--red)">\u2717 expired</span>'
-        : '<span style="color:var(--dim)">no cert</span>';
-      var btns = '';
-      if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Provision</button>';
-      else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Renew</button>';
-      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + d.domain + '\')">Remove</button>';
-      return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><div><strong>' + escH(d.domain) + '</strong></div><div>' + badge + btns + '</div></div>'
-        + (d.certExpires ? '<div style="font-size:12px;color:var(--dim);margin-top:2px">Expires: ' + escH(d.certExpires) + '</div>' : '')
+      var btns = ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + d.domain + '\')">Remove</button>';
+      return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><div><strong>' + escH(d.domain) + '</strong></div><div>' + btns + '</div></div>'
+        + '<div class="dom-cert" id="' + certBoxId(d.domain) + '"><span style="color:var(--dim);font-size:12px">Checking the certificate\u2026</span></div>'
         + (d.source === 'panel' ? domainEditor(d) : (d.root ? '<div style="font-size:12px;color:var(--dim);margin-top:4px">Root: ' + escH(d.root) + ' (from config)</div>' : ''))
         + '</div>';
     }).join('');
+    r.domains.forEach(function(d) { loadDomainCert(d.domain); });
   }
   loadHosts();
 }
@@ -1116,7 +1110,72 @@ async function previewDomainRoot(domain, name, input) {
   } catch (e) {}
 }
 async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; var r = await api('domains/remove',{domain:n, confirm:true}); if (r && r.error) alert(r.error); loadDomains(); }
-async function provisionCert(n) { alert('Provisioning '+n+'...'); var r=await api('domains/provision',{domain:n}); alert(r.success?'Done!':r.error||'Failed'); loadDomains(); }
+// ── A domain's certificate: which one covers it, and issuing one ──
+function certBoxId(domain) { return 'cert-' + String(domain).replace(/[^a-z0-9]/g, '-'); }
+function certDate(t) { return t ? new Date(t * 1000).toISOString().slice(0, 10) : '?'; }
+async function loadDomainCert(domain) {
+  var box = document.getElementById(certBoxId(domain));
+  if (!box) return;
+  var r;
+  try { r = await api('domains/cert?domain=' + encodeURIComponent(domain)); } catch (e) { return; }
+  if (!r || r.error) { box.innerHTML = '<span style="color:var(--red);font-size:12px">' + escH((r && r.error) || 'could not read the certificate') + '</span>'; return; }
+  var c = r.certificate, h = '<div class="cert-head">Certificate</div>';
+  if (c) {
+    var days = c.daysLeft, cls = days === null ? '' : days < 0 ? 'cert-bad' : days <= 21 ? 'cert-warn' : 'cert-ok';
+    h += '<div class="cert-grid">'
+      + '<span>Issuer</span><span>' + escH(c.issuer || '?') + (c.selfSigned ? ' <em class="cert-warn">(self-signed)</em>' : '') + '</span>'
+      + '<span>Valid</span><span>' + certDate(c.notBefore) + ' → ' + certDate(c.notAfter) + ' <b class="' + cls + '">' + (days === null ? '' : days < 0 ? 'expired' : days + ' days left') + '</b></span>'
+      + '<span>Names</span><span>' + (c.names || []).map(escH).join(', ') + '</span>'
+      + '<span>Served</span><span>' + (r.served ? 'yes, by the HTTPS listener' : 'no') + '</span>'
+      + '</div>';
+  } else {
+    h += '<div style="font-size:12px;color:var(--dim)">No certificate is being served.</div>';
+  }
+  var cov = r.covered || {};
+  h += '<div class="cert-hosts">' + Object.keys(cov).map(function (k) {
+    return '<span class="dom-chip ' + (cov[k] ? 'cert-ok' : 'cert-bad') + '">' + (cov[k] ? '✓ ' : '✗ ') + escH(k) + '</span>';
+  }).join(' ') + '</div>';
+  (r.warnings || []).forEach(function (w) { h += '<div class="cert-warn" style="font-size:12px">⚠ ' + escH(w) + '</div>'; });
+  if (r.canIssue) {
+    h += '<div class="dom-row" style="margin-top:6px"><button class="btn btn-primary" onclick="issueDomainCert(\'' + escH(domain) + '\')">' + (c && !r.notCovered.length ? 'Renew for this domain' : 'Issue for this domain') + '</button>'
+      + '<span class="cert-job" id="' + certBoxId(domain) + '-job">' + certJobText(r.job) + '</span></div>';
+  } else {
+    h += '<div style="font-size:12px;color:var(--dim);margin-top:6px">Issuing here is not available: ' + escH(r.issueWhy || '') + '</div>';
+  }
+  box.innerHTML = h;
+  if (r.job && (r.job.state === 'running' || r.job.state === 'queued')) pollCertJob(domain, r.job.job);
+}
+function certJobText(j) {
+  if (!j || !j.state || j.state === 'none') return '';
+  if (j.state === 'running') return 'Issuing…';
+  if (j.state === 'queued') return 'Queued…';
+  if (j.state === 'succeeded') return '<span class="cert-ok">Issued ' + certDate(j.lastSuccess) + '</span>';
+  return '<span class="cert-bad">Failed: ' + escH(j.error || 'unknown error') + (j.nextAttempt ? ' (next try ' + new Date(j.nextAttempt * 1000).toLocaleString() + ')' : '') + '</span>';
+}
+async function issueDomainCert(domain) {
+  var r = await api('domains/cert/issue', {domain: domain});
+  if (r && r.confirm) {
+    if (!confirm(r.error)) return;
+    r = await api('domains/cert/issue', {domain: domain, confirm: true});
+  }
+  if (!r || r.error) { alert((r && r.error) || 'Could not start'); return; }
+  var el = document.getElementById(certBoxId(domain) + '-job');
+  if (el) el.innerHTML = certJobText(r);
+  pollCertJob(domain, r.job);
+}
+var certPolls = {};
+function pollCertJob(domain, id) {
+  if (!id || certPolls[domain]) return;
+  certPolls[domain] = setInterval(async function () {
+    var j;
+    try { j = await api('domains/cert/job?id=' + encodeURIComponent(id)); } catch (e) { j = null; }
+    var el = document.getElementById(certBoxId(domain) + '-job');
+    if (!el || !j || j.error) { clearInterval(certPolls[domain]); delete certPolls[domain]; return; }
+    el.innerHTML = certJobText(j);
+    if (j.state !== 'running' && j.state !== 'queued') { clearInterval(certPolls[domain]); delete certPolls[domain]; if (j.state === 'succeeded') setTimeout(function () { loadDomainCert(domain); }, 1500); }
+  }, 3000);
+}
+async function provisionCert(n) { return issueDomainCert(n); }
 
 // ── Security & Attestation ──────────────────────────
 async function loadSecurity() {
