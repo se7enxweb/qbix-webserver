@@ -196,13 +196,58 @@ Existing domains keep the roots they have; nothing is migrated.
 | `note` | free text |
 | `root`, `app`, `tls`, `aliases` | as `Q.webserver.domains` |
 | `subdomains` | `{ name or full host: root }` |
-| reserved | `redirects`, `hsts`, `errorDocs`, `certificate` |
+| `redirects` | `{ https, preferredHost: "www"\|"bare", rules: [{ match, from, to, code, keepQuery }] }` |
+| `hsts` | `{ enabled, maxAge, includeSubDomains }` |
+| `errorDocs` | `{ "404": "errors/404.html", ... }` for 403, 404, 500, 503 |
+| reserved | `certificate` |
 
 Unknown fields are kept when a record is updated, so later versions can add
 to it without migrating anything.
 
-**Planned** (not built yet): HTTP→HTTPS and preferred-host redirects, custom forwarding,
-HSTS and custom error documents; issuing and renewing a certificate for one
+**Redirects, HSTS and error documents.** Each domain card also has an editor
+for these. A request is handled in this order: the domain's status, then its
+redirects, then routing to its document root, and the error documents last.
+The server's own `/Q/` and `/.well-known/` (ACME challenges) are exempt from
+all of them, so a certificate can always be issued and the panel always reached.
+
+- **HTTP → HTTPS**: a permanent 301 to the same host, path and query on the
+  HTTPS port (no port in the URL when it is 443). It can only be switched on
+  when the server has an HTTPS listener and its certificate covers the domain;
+  otherwise the panel refuses and says which of the two is missing.
+- **Preferred host**: `www` or `bare`. A request for the other form of the
+  domain gets a 301 to the preferred one. When the scheme changes too, both
+  happen in one hop. Aliases are left alone unless they are that other form.
+- **Custom rules**, first match wins, each a 301 or a 302:
+
+  | `match` | `from` | Target |
+  |---|---|---|
+  | `exact` | a path | `to`, as written |
+  | `prefix` | a path | `to` with the rest of the path appended (`/old/a` → `…/new/a`) |
+  | `host` | the domain, an alias or a subdomain host | `to` with the whole path appended |
+
+  `keepQuery` carries the query string over. A rule whose target would match
+  the rule again (the same host and path, including through an alias) is
+  refused, so a rule can never loop.
+- **HSTS**: when on, `Strict-Transport-Security: max-age=N[; includeSubDomains]`
+  is added to every HTTPS response for that domain, over HTTP/1.1 and HTTP/2,
+  and never to a plain HTTP response. `maxAge` defaults to 31536000 (one year)
+  and may be 0 to 63072000. An application's own header is not replaced.
+- **Error documents**: a path under the domain's document root for 403, 404,
+  500 or 503. The server's own error page for that status is replaced by the
+  file, which is read and never executed, and it keeps the original status. A
+  path that climbs out of the root (`..`, or a symlink pointing outside) or does
+  not exist is refused when you save it, and ignored if it disappears later: the
+  built-in page is served instead. An application's own error responses are its
+  business and are not replaced.
+
+API (signed in): `POST domains/redirects {domain, https?, preferredHost?, rules?, confirm?}`,
+`POST domains/hsts {domain, enabled, maxAge?, includeSubDomains?, confirm?}`,
+`POST domains/errordocs {domain, docs: {code: path}}`. A problem answers 400
+with the reason. Switching on the HTTPS redirect or HSTS answers 409 until it is
+sent again with `confirm`, since browsers remember both (HSTS for `maxAge`
+seconds).
+
+**Planned** (not built yet): issuing and renewing a certificate for one
 domain; per-domain logs and traffic. Further out: password-protected
 directories, hotlink protection, a PHP version and settings per domain, limits,
 quotas and disk usage, backups, web statistics history, IP address assignment,

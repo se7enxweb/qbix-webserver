@@ -98,6 +98,11 @@ class Q_WebServer_Headers
 		$status = $response['status'] ?? 200;
 		$body = $response['body'] ?? '';
 		$headers = $response['headers'] ?? array();
+		// HSTS for a domain that asks for it, on HTTPS responses only.
+		if (class_exists('Q_WebServer_Domains', false) and is_array($headers)) {
+			$meta = is_resource($client) ? @stream_get_meta_data($client) : array();
+			Q_WebServer_Domains::addHsts($headers, $requestHeaders['host'] ?? '', !empty($meta['crypto']));
+		}
 
 		// RFC 9110 §9.3.2: a HEAD response is identical to GET except that it
 		// MUST NOT send a body. Static files already honoured this, but PHP

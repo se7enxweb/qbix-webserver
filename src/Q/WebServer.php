@@ -837,6 +837,9 @@ class Q_WebServer
 				(microtime(true) - $started) * 1000,
 				false
 			);
+			// HSTS for a domain that asks for it (HTTP/2 is TLS here).
+			if (!isset($response['headers']) or !is_array($response['headers'])) $response['headers'] = array();
+			Q_WebServer_Domains::addHsts($response['headers'], $request['headers']['host'] ?? '', true);
 		}
 		return $response;
 	}
@@ -948,6 +951,23 @@ class Q_WebServer
 		if ($root !== null) self::$rootDir = $root . DS;
 	}
 
+	/**
+	 * An error answer on the HTTP/2 route: the domain's own error document
+	 * for that status when it has one, the route's short plain text otherwise.
+	 * @method http2Error
+	 * @static
+	 * @private
+	 */
+	private static function http2Error($code, $text)
+	{
+		if (($doc = Q_WebServer_Domains::errorDocument($code)) !== null) {
+			return array('status' => $code,
+				'headers' => array('content-type' => 'text/html; charset=utf-8'), 'body' => $doc);
+		}
+		return array('status' => $code,
+			'headers' => $code === 404 ? array('content-type' => 'text/plain') : array(), 'body' => $text);
+	}
+
 	static function http2Route($key, $request)
 	{
 		// The domain's document root holds for the synchronous part of the
@@ -963,7 +983,9 @@ class Q_WebServer
 			$conn = self::$http2[$key];
 			$stream = $request['stream'];
 
-			// A suspended or disabled domain: see handleRequest().
+			// A suspended or disabled domain, or a redirect: see handleRequest().
+			// HTTP/2 is only ever spoken after a TLS handshake here.
+			$request['_https'] = true;
 			if (($gate = Q_WebServer_Domains::gate($request)) !== null) {
 				return $gate;
 			}
@@ -988,7 +1010,7 @@ class Q_WebServer
 			$fsPath = $root . str_replace('/', DIRECTORY_SEPARATOR, $decoded);
 
 			if (is_file($fsPath) and !self::insideRoot($fsPath)) {
-				return array('status' => 403, 'headers' => array(), 'body' => 'Forbidden');
+				return self::http2Error(403, 'Forbidden');
 			}
 
 			// The same two refusals HTTP/1.1 makes, which this route did not.
@@ -1000,13 +1022,13 @@ class Q_WebServer
 			// protecting was protected only from clients old enough to ask for it
 			// in the older protocol.
 			if (self::isBlocked($decoded)) {
-				return array('status' => 403, 'headers' => array(), 'body' => 'Forbidden');
+				return self::http2Error(403, 'Forbidden');
 			}
 
 			if (is_file($fsPath)) {
 				$ext = strtolower(pathinfo($fsPath, PATHINFO_EXTENSION));
 				if ($ext !== 'php' and !in_array($ext, self::$allowedExtensions)) {
-					return array('status' => 403, 'headers' => array(), 'body' => 'Forbidden');
+					return self::http2Error(403, 'Forbidden');
 				}
 				if ($ext !== 'php') {
 					$built = self::buildFileResponse(
@@ -1063,11 +1085,7 @@ class Q_WebServer
 			// path does, then hand it to a worker.
 			$scriptPath = self::resolveScript($decoded, $fsPath);
 			if ($scriptPath === null or !self::$pool) {
-				return array(
-					'status' => 404,
-					'headers' => array('content-type' => 'text/plain'),
-					'body' => "Not Found\n"
-				);
+				return self::http2Error(404, "Not Found\n");
 			}
 
 			// Who is asking, worked out the way the HTTP/1.1 path works it out:
@@ -1137,6 +1155,8 @@ class Q_WebServer
 					// Without this the store is never filled from HTTP/2 and every
 					// request pays the full render.
 					$resp = Q_WebServer_Cache::put($parsed, $resp);
+					if (!isset($resp['headers']) or !is_array($resp['headers'])) $resp['headers'] = array();
+					Q_WebServer_Domains::addHsts($resp['headers'], $parsed['headers']['host'] ?? '', true);
 					Q_WebServer::$http2[$key]->respond($stream, $resp);
 				}
 			);
@@ -1144,6 +1164,7 @@ class Q_WebServer
 			return null; // answered later, on this stream
 		} finally {
 			self::$rootDir = $savedRoot;
+			Q_WebServer_Domains::$currentHost = null;
 		}
 	}
 
@@ -1990,6 +2011,7 @@ class Q_WebServer
 			if (self::$rootDir !== $savedRoot) {
 				self::$rootDir = $savedRoot;
 			}
+			if (class_exists('Q_WebServer_Domains', false)) Q_WebServer_Domains::$currentHost = null;
 		}
 		$ms = round((microtime(true) - $start) * 1000, 1);
 
@@ -2626,8 +2648,10 @@ class Q_WebServer
 		$method = $parsed['method'];
 		$path = $parsed['path'];
 
-		// A suspended or disabled domain is answered here, before the reverse
-		// cache could serve a page stored while it was active.
+		// A suspended or disabled domain, or one of its redirects, is answered
+		// here, before the reverse cache could serve a page stored earlier.
+		$meta = is_resource($client) ? @stream_get_meta_data($client) : array();
+		$parsed['_https'] = !empty($meta['crypto']);
 		if (($gate = Q_WebServer_Domains::gate($parsed)) !== null) {
 			$gateHeaders = $gate['headers'];
 			$gateType = $gateHeaders['Content-Type'];
@@ -2666,6 +2690,8 @@ class Q_WebServer
 			if ($cached) {
 				$fresh = Q_WebServer_Cache::notModified($cached, $parsed['headers']);
 				if ($fresh !== null) $cached = $fresh;
+				if (!isset($cached['headers']) or !is_array($cached['headers'])) $cached['headers'] = array();
+				Q_WebServer_Domains::addHsts($cached['headers'], $parsed['headers']['host'] ?? '', !empty($parsed['_https']));
 				self::sendResponse($client, $cached['status'],
 					$cached['body'],
 					$cached['headers']['Content-Type'] ?? 'text/html',
@@ -4007,6 +4033,18 @@ WORKER;
 			: (strpos($aeRaw, 'gzip') !== false ? 'gzip' : 'id');
 		$cacheKey = $fsPath . '|' . $encKey;
 
+		// The domain's HSTS header is part of the stored response, so it is
+		// part of the key too: two domains can share a root, and the same
+		// file goes out over HTTP (never with it) and HTTPS.
+		$hsts = null;
+		if (class_exists('Q_WebServer_Domains', false)) {
+			$staticMeta = is_resource($client) ? @stream_get_meta_data($client) : array();
+			$hsts = Q_WebServer_Domains::hstsHeader(
+				Q_WebServer_Domains::normalize($reqHeaders['host'] ?? ''), !empty($staticMeta['crypto'])
+			);
+			if ($hsts !== null) $cacheKey .= '|' . $hsts;
+		}
+
 		// ── Try response cache ──
 		if (isset(self::$fileCache[$cacheKey])) {
 			$cached = &self::$fileCache[$cacheKey];
@@ -4074,6 +4112,7 @@ WORKER;
 			. "ETag: $etag\r\n"
 			. "Last-Modified: " . gmdate('D, d M Y H:i:s', $mtime) . " GMT\r\n"
 			. "Cache-Control: " . self::staticCacheControl($fsPath) . "\r\n";
+		if ($hsts !== null) $baseHeaders .= "Strict-Transport-Security: $hsts\r\n";
 
 		// ── Large file fork ──
 		// Files over 1MB are served by a forked child process so the parent's
@@ -5366,11 +5405,13 @@ WORKER;
 	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
 	{
 		static $reasons = array(
-			200=>'OK', 301=>'Moved Permanently', 304=>'Not Modified',
-			400=>'Bad Request', 403=>'Forbidden', 404=>'Not Found',
-			413=>'Payload Too Large', 429=>'Too Many Requests',
+			200=>'OK', 301=>'Moved Permanently', 302=>'Found', 304=>'Not Modified',
+			307=>'Temporary Redirect', 308=>'Permanent Redirect',
+			400=>'Bad Request', 401=>'Unauthorized', 403=>'Forbidden', 404=>'Not Found',
+			409=>'Conflict', 413=>'Payload Too Large', 429=>'Too Many Requests',
 			431=>'Request Header Fields Too Large',
-			500=>'Internal Server Error', 502=>'Bad Gateway'
+			500=>'Internal Server Error', 502=>'Bad Gateway',
+			503=>'Service Unavailable', 504=>'Gateway Timeout'
 		);
 		self::$lastStatus = $status;
 		self::$lastBody = $body;
@@ -5378,6 +5419,13 @@ WORKER;
 		self::$lastBytes = strlen($body);
 		$conn = $extra['Connection'] ?? 'keep-alive';
 		unset($extra['Connection']);
+		if (!is_array($extra)) $extra = array();
+		// The server's own pages (404, 403 ...) for a domain with HSTS: the
+		// host is the one the gate saw for this request.
+		if (class_exists('Q_WebServer_Domains', false) and Q_WebServer_Domains::$currentHost !== null
+			and is_resource($client) and !empty(@stream_get_meta_data($client)['crypto'])) {
+			Q_WebServer_Domains::addHsts($extra, Q_WebServer_Domains::$currentHost, true);
+		}
 
 		// Content-Type was written from the argument and the caller's headers
 		// were appended after it, so a caller that had one -- every cached
@@ -5695,6 +5743,12 @@ WORKER;
 	 */
 	static function renderErrorPage($code, $path = '', $message = null)
 	{
+		// The domain's own error document, when it has one for this status
+		// (the caller keeps the status; this only chooses the body).
+		if (class_exists('Q_WebServer_Domains', false)
+			and ($doc = Q_WebServer_Domains::errorDocument($code)) !== null) {
+			return $doc;
+		}
 		$safe = htmlspecialchars($path, ENT_QUOTES);
 
 		// Check user overrides: errors/404.php, errors/404.html

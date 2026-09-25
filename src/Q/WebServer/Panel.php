@@ -341,6 +341,12 @@ class Q_WebServer_Panel
 				return self::apiDomainSubdomain($parsed);
 			case 'domains/root':
 				return self::apiDomainRoot($parsed);
+			case 'domains/redirects':
+				return self::apiDomainRedirects($parsed);
+			case 'domains/hsts':
+				return self::apiDomainHsts($parsed);
+			case 'domains/errordocs':
+				return self::apiDomainErrorDocs($parsed);
 			case 'domains/defaults':
 				return self::apiDomainDefaults($parsed);
 			case 'domains/provision':
@@ -2136,6 +2142,9 @@ class Q_WebServer_Panel
 				'since' => $conf['since'] ?? null,
 				'note' => $conf['note'] ?? '',
 				'source' => $conf['source'] ?? 'panel',
+				'redirects' => is_array($conf['redirects'] ?? null) ? $conf['redirects'] : null,
+				'hsts' => is_array($conf['hsts'] ?? null) ? $conf['hsts'] : null,
+				'errorDocs' => is_array($conf['errorDocs'] ?? null) ? (object) $conf['errorDocs'] : null,
 			];
 			if (is_file($certPath)) {
 				$expiry = Q_WebServer_Acme::certExpiry($certPath);
@@ -2382,6 +2391,102 @@ class Q_WebServer_Panel
 			return ['status' => 503, 'error' => 'The panel store cannot be written'];
 		}
 		return ['domain' => $domain, 'root' => $root === '' ? null : $root];
+	}
+
+	/**
+	 * POST domains/redirects {domain, https?, preferredHost?, rules?, confirm?}
+	 * -- replaces the domain's redirects; an empty body (no https, no
+	 * preferredHost, no rules) clears them. Turning the HTTPS redirect on
+	 * needs confirm, and is refused without an HTTPS listener or a
+	 * certificate that covers the domain.
+	 */
+	static function apiDomainRedirects($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		if (!is_array($body)) return ['status' => 400, 'error' => 'The body must be a JSON object'];
+		$domain = Q_WebServer_Domains::normalize($body['domain'] ?? '');
+		if (!Q_WebServer_Domains::validName($domain)) return ['status' => 400, 'error' => 'Invalid domain name'];
+		$records = Q_WebServer_Domains::records();
+		$rec = is_array($records[$domain] ?? null) ? $records[$domain] : array();
+		$r = array();
+		if (!empty($body['https'])) $r['https'] = true;
+		$pref = $body['preferredHost'] ?? null;
+		if ($pref !== null and $pref !== '') $r['preferredHost'] = $pref;
+		$rules = array();
+		foreach ((array) ($body['rules'] ?? array()) as $rule) {
+			if (!is_array($rule)) return ['status' => 400, 'error' => 'Each rule must be an object'];
+			$rules[] = array(
+				'match' => (string) ($rule['match'] ?? 'prefix'),
+				'from' => (string) ($rule['from'] ?? ''),
+				'to' => trim((string) ($rule['to'] ?? '')),
+				'code' => (int) ($rule['code'] ?? 301),
+				'keepQuery' => !empty($rule['keepQuery']),
+			);
+		}
+		if ($rules) $r['rules'] = $rules;
+		$cert = Q_WebServer_DomainUsage::certificate();
+		$why = Q_WebServer_Domains::redirectsProblem($domain, $rec, $r, $cert ? $cert['names'] : array());
+		if ($why !== null) return ['status' => 400, 'error' => $why];
+		$wasHttps = !empty($rec['redirects']['https']);
+		if (!empty($r['https']) and !$wasHttps and empty($body['confirm'])) {
+			return ['status' => 409, 'error' => "Sending $domain from HTTP to HTTPS makes browsers remember it; send confirm to proceed", 'confirm' => true];
+		}
+		if (!Q_WebServer_Domains::setRedirects($domain, $r ? $r : null)) {
+			return ['status' => 503, 'error' => 'The panel store cannot be written'];
+		}
+		return ['domain' => $domain, 'redirects' => $r ? $r : null];
+	}
+
+	/** POST domains/hsts {domain, enabled, maxAge?, includeSubDomains?, confirm?} */
+	static function apiDomainHsts($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		if (!is_array($body)) return ['status' => 400, 'error' => 'The body must be a JSON object'];
+		$domain = Q_WebServer_Domains::normalize($body['domain'] ?? '');
+		if (!Q_WebServer_Domains::validName($domain)) return ['status' => 400, 'error' => 'Invalid domain name'];
+		if (empty($body['enabled'])) {
+			if (!Q_WebServer_Domains::setHsts($domain, null)) return ['status' => 503, 'error' => 'The panel store cannot be written'];
+			return ['domain' => $domain, 'hsts' => null];
+		}
+		$age = isset($body['maxAge']) ? $body['maxAge'] : 31536000;
+		if (!is_numeric($age) or (int) $age < 0 or (int) $age > 63072000) {
+			return ['status' => 400, 'error' => 'maxAge must be between 0 and 63072000 seconds (two years)'];
+		}
+		if (Q_WebServer_Domains::httpsPortSuffix() === null) {
+			return ['status' => 400, 'error' => 'there is no HTTPS listener, so HSTS would never be sent'];
+		}
+		$records = Q_WebServer_Domains::records();
+		if (empty($records[$domain]['hsts']['enabled']) and empty($body['confirm'])) {
+			return ['status' => 409, 'error' => "HSTS makes browsers refuse plain HTTP for $domain for the whole max-age, even after it is turned off; send confirm to proceed", 'confirm' => true];
+		}
+		$h = array('enabled' => true, 'maxAge' => (int) $age, 'includeSubDomains' => !empty($body['includeSubDomains']));
+		if (!Q_WebServer_Domains::setHsts($domain, $h)) return ['status' => 503, 'error' => 'The panel store cannot be written'];
+		return ['domain' => $domain, 'hsts' => $h];
+	}
+
+	/** POST domains/errordocs {domain, docs: {"404": "errors/404.html", ...}} -- replaces them; {} clears. */
+	static function apiDomainErrorDocs($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		if (!is_array($body)) return ['status' => 400, 'error' => 'The body must be a JSON object'];
+		$domain = Q_WebServer_Domains::normalize($body['domain'] ?? '');
+		if (!Q_WebServer_Domains::validName($domain)) return ['status' => 400, 'error' => 'Invalid domain name'];
+		$records = Q_WebServer_Domains::records();
+		$root = Q_WebServer_Domains::realDir($records[$domain]['root'] ?? null);
+		$docs = array();
+		foreach ((array) ($body['docs'] ?? array()) as $code => $rel) {
+			$rel = trim((string) $rel);
+			if ($rel === '') continue;
+			if (!in_array((int) $code, Q_WebServer_Domains::ERROR_CODES, true)) {
+				return ['status' => 400, 'error' => "Error documents are for " . implode(', ', Q_WebServer_Domains::ERROR_CODES) . ", not $code"];
+			}
+			if (Q_WebServer_Domains::errorDocPath($root, $rel, $why) === null) {
+				return ['status' => 400, 'error' => "$code: $why"];
+			}
+			$docs[(string) (int) $code] = ltrim(str_replace('\\', '/', $rel), '/');
+		}
+		if (!Q_WebServer_Domains::setErrorDocs($domain, $docs)) return ['status' => 503, 'error' => 'The panel store cannot be written'];
+		return ['domain' => $domain, 'errorDocs' => $docs ? $docs : null];
 	}
 
 	static function apiProvisionCert($parsed)

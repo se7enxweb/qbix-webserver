@@ -30,10 +30,29 @@
  * served from the default root, as an unknown host always is. The server's
  * own /Q/ and /.well-known/ paths are never rerouted.
  *
- * Reserved for later, so records written now stay valid: "redirects"
- * (https, preferredHost, rules), "hsts" (enabled, maxAge), "errorDocs"
- * (status => path), "certificate". Unknown fields are kept as they are
- * when a record is updated.
+ *     "redirects": {                           (answered before routing)
+ *       "https": true,                          HTTP -> HTTPS, 301
+ *       "preferredHost": "www" | "bare",        the other form -> this, 301
+ *       "rules": [ { "match": "prefix"|"exact"|"host", "from": "/old",
+ *                    "to": "https://example.com/new", "code": 301|302,
+ *                    "keepQuery": true } ]    first match wins
+ *     },
+ *     "hsts": { "enabled": true, "maxAge": 31536000,
+ *               "includeSubDomains": false }   sent over HTTPS only
+ *     "errorDocs": { "404": "errors/404.html", ... }
+ *                path under the domain's root, served (not executed)
+ *                with the original status; 403, 404, 500 and 503
+ *   }
+ *
+ * Redirects: the HTTPS redirect and the preferred host are one hop -- the
+ * scheme and the host are both corrected in a single 301. A "prefix" rule
+ * sends /old/page to <to>/page (the rest of the path is appended); "exact"
+ * sends only that path to <to>; "host" sends every request for the host
+ * named in "from" (the domain itself, an alias or a subdomain) to <to>,
+ * with the path appended. "keepQuery" carries the query string over.
+ *
+ * Reserved for later, so records written now stay valid: "certificate".
+ * Unknown fields are kept as they are when a record is updated.
  *
  * Status, as the gate applies it (the server's own /Q/ and /.well-known/
  * paths are never gated, so the panel and certificate renewals keep
@@ -41,6 +60,10 @@
  *   active     served normally
  *   suspended  503 with Retry-After: the site is temporarily off
  *   disabled   404: the server does not serve this host at all
+ *
+ * Order, per request: status (above), then redirects, then routing to the
+ * domain's root; error documents replace the server's own error pages for
+ * the host, and HSTS is added to its HTTPS responses.
  *
  * @class Q_WebServer_Domains
  * @static
@@ -53,6 +76,13 @@ class Q_WebServer_Domains
 	protected static $cache = null;
 	protected static $cachedAt = 0.0;
 	const TTL = 2.0;
+
+	/**
+	 * @var string|null the Host of the request being answered synchronously,
+	 * so the server's error page can use the domain's own document; set by
+	 * gate(), cleared where the request's document root is restored
+	 */
+	static $currentHost = null;
 
 	/** @var array host => array(count, last), Host headers seen by the gate */
 	protected static $seen = array();
@@ -380,11 +410,12 @@ class Q_WebServer_Domains
 		if ($host === '') return null;
 		self::noteHost($host);
 		$path = (string) ($parsed['path'] ?? '/');
-		if (strncmp($path, '/Q/', 3) === 0 or strncmp($path, '/.well-known/', 13) === 0) return null;
+		if (self::exempt($path)) return null;
+		self::$currentHost = $host;
 		$hit = self::lookup($host);
 		if ($hit === null) return null;
 		$status = $hit[1]['status'] ?? 'active';
-		if ($status === 'active') return null;
+		if ($status === 'active') return self::redirect($parsed, $host, $hit[0], $hit[1]);
 		if ($status === 'suspended') {
 			$body = class_exists('Q_WebServer', false)
 				? Q_WebServer::renderErrorPage(503, $path, 'This site is temporarily suspended.')
@@ -402,6 +433,258 @@ class Q_WebServer_Domains
 			'Content-Type' => 'text/html; charset=utf-8',
 			'Cache-Control' => 'no-store',
 		), 'body' => $body);
+	}
+
+	/** The server's own paths, never gated, redirected or rerouted (ACME keeps working). */
+	static function exempt($path)
+	{
+		$path = (string) $path;
+		return strncmp($path, '/Q/', 3) === 0 or strncmp($path, '/.well-known/', 13) === 0;
+	}
+
+	/** Whether the request came over TLS: set by the server as '_https'. */
+	static function isHttps(array $parsed)
+	{
+		return !empty($parsed['_https']) or !empty($parsed['https']);
+	}
+
+	/** $host in the preferred form for $domain ("www" or "bare"), or null when it is not one of the two. */
+	static function preferredForm($host, $domain, $preferred)
+	{
+		$bare = strncmp($domain, 'www.', 4) === 0 ? substr($domain, 4) : $domain;
+		$www = 'www.' . $bare;
+		if ($host !== $bare and $host !== $www) return null;
+		return $preferred === 'www' ? $www : ($preferred === 'bare' ? $bare : null);
+	}
+
+	/**
+	 * The redirect a request gets, as a response array, or null.
+	 * @param {array} $parsed with path (and query), headers, _https
+	 * @param {string} $host normalized
+	 * @param {string} $domain the record's name
+	 * @param {array} $rec
+	 * @return {array|null}
+	 */
+	static function redirect(array $parsed, $host, $domain, array $rec)
+	{
+		$r = is_array($rec['redirects'] ?? null) ? $rec['redirects'] : array();
+		if (!$r) return null;
+		$uri = (string) ($parsed['uri'] ?? $parsed['path'] ?? '/');
+		$q = strpos($uri, '?');
+		$path = $q === false ? $uri : substr($uri, 0, $q);
+		$query = $q === false ? '' : substr($uri, $q + 1);
+		if ($query === '' and !empty($parsed['query']) and is_string($parsed['query'])) $query = $parsed['query'];
+		if ($path === '') $path = '/';
+		$https = self::isHttps($parsed);
+
+		// Scheme and host in one hop.
+		$toHttps = (!empty($r['https']) && !$https && self::httpsPortSuffix() !== null);
+		$toHost = null;
+		if (!empty($r['preferredHost'])) {
+			$want = self::preferredForm($host, $domain, $r['preferredHost']);
+			if ($want !== null and $want !== $host) $toHost = $want;
+		}
+		if ($toHttps or $toHost !== null) {
+			$scheme = ($toHttps or $https) ? 'https' : 'http';
+			$port = $scheme === 'https' ? self::httpsPortSuffix() : self::portOf($parsed['headers']['host'] ?? '');
+			$loc = $scheme . '://' . ($toHost ?? $host) . (string) $port . $path . ($query !== '' ? '?' . $query : '');
+			return self::redirectResponse(301, $loc);
+		}
+
+		foreach ((array) ($r['rules'] ?? array()) as $rule) {
+			if (!is_array($rule) or empty($rule['to'])) continue;
+			$match = $rule['match'] ?? 'prefix';
+			$from = (string) ($rule['from'] ?? '');
+			$code = (int) ($rule['code'] ?? 301) === 302 ? 302 : 301;
+			$to = (string) $rule['to'];
+			$rest = null;
+			if ($match === 'host') {
+				if (self::normalize($from) === $host) $rest = $path;
+			} elseif ($match === 'exact') {
+				if ($from !== '' and $path === $from) $rest = '';
+			} elseif ($from !== '' and strncmp($path, $from, strlen($from)) === 0) {
+				$rest = (string) substr($path, strlen($from));
+			}
+			if ($rest === null) continue;
+			if ($rest !== '' and substr($to, -1) === '/' and $rest[0] === '/') $rest = substr($rest, 1);
+			$loc = $to . $rest;
+			if (!empty($rule['keepQuery']) and $query !== '') $loc .= (strpos($loc, '?') === false ? '?' : '&') . $query;
+			return self::redirectResponse($code, $loc);
+		}
+		return null;
+	}
+
+	protected static function redirectResponse($code, $location)
+	{
+		$safe = htmlspecialchars($location, ENT_QUOTES);
+		return array('status' => $code, 'headers' => array(
+			'Content-Type' => 'text/html; charset=utf-8',
+			'Location' => $location,
+			'Cache-Control' => $code === 301 ? 'max-age=3600' : 'no-store',
+		), 'body' => "<!DOCTYPE html><title>Moved</title><p>Moved to <a href=\"$safe\">$safe</a></p>");
+	}
+
+	/** ":port" for the HTTPS listener (empty for 443), or null when there is none. */
+	static function httpsPortSuffix()
+	{
+		$p = class_exists('Q_WebServer', false) ? Q_WebServer::httpsPort() : 0;
+		if ($p <= 0) return null;
+		return $p === 443 ? '' : ':' . $p;
+	}
+
+	/** ":port" from a Host header, or "". */
+	protected static function portOf($hostHeader)
+	{
+		$h = (string) $hostHeader;
+		if ($h !== '' and $h[0] === '[') {
+			$end = strpos($h, ']');
+			return ($end !== false and isset($h[$end + 1]) and $h[$end + 1] === ':') ? substr($h, $end + 1) : '';
+		}
+		$c = strrpos($h, ':');
+		return $c === false ? '' : substr($h, $c);
+	}
+
+	/**
+	 * The Strict-Transport-Security value for an HTTPS response to $host, or
+	 * null (not HTTPS, no domain, HSTS off).
+	 */
+	static function hstsHeader($host, $https)
+	{
+		if (!$https) return null;
+		$hit = self::lookup($host);
+		if ($hit === null) return null;
+		$h = $hit[1]['hsts'] ?? null;
+		if (!is_array($h) or empty($h['enabled'])) return null;
+		$age = isset($h['maxAge']) ? max(0, (int) $h['maxAge']) : 31536000;
+		return 'max-age=' . $age . (!empty($h['includeSubDomains']) ? '; includeSubDomains' : '');
+	}
+
+	/** Add HSTS to a response's headers when it applies (headers as name => value). */
+	static function addHsts(array &$headers, $host, $https)
+	{
+		$v = self::hstsHeader(self::normalize($host), $https);
+		if ($v === null) return;
+		foreach ($headers as $k => $_) {
+			if (is_string($k) and strcasecmp($k, 'Strict-Transport-Security') === 0) return;
+		}
+		$headers['Strict-Transport-Security'] = $v;
+	}
+
+	const ERROR_CODES = array(403, 404, 500, 503);
+
+	/**
+	 * The domain's own error document for the request being answered, or
+	 * null: a file under the domain's root, read (never executed).
+	 */
+	static function errorDocument($code)
+	{
+		if (self::$currentHost === null or !in_array((int) $code, self::ERROR_CODES, true)) return null;
+		$hit = self::lookup(self::$currentHost);
+		if ($hit === null) return null;
+		$docs = is_array($hit[1]['errorDocs'] ?? null) ? $hit[1]['errorDocs'] : array();
+		$rel = $docs[(string) (int) $code] ?? null;
+		if (!is_string($rel) or $rel === '') return null;
+		$root = self::realDir($hit[1]['root'] ?? null);
+		$file = self::errorDocPath($root, $rel);
+		if ($file === null) return null;
+		$body = @file_get_contents($file);
+		return $body === false ? null : $body;
+	}
+
+	/** The real path of an error document under $root, or null when it is missing or escapes. */
+	static function errorDocPath($root, $rel, &$why = null)
+	{
+		if ($root === null) { $why = 'the domain has no document root'; return null; }
+		$rel = ltrim(str_replace('\\', '/', (string) $rel), '/');
+		if ($rel === '' or preg_match('#(^|/)\.\.(/|$)#', $rel)) { $why = 'the path must stay under the document root'; return null; }
+		$real = realpath($root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel));
+		if ($real === false or !is_file($real)) { $why = "$rel is not a file under the document root"; return null; }
+		if (strncmp($real, $root . DIRECTORY_SEPARATOR, strlen($root) + 1) !== 0) { $why = 'the path must stay under the document root'; return null; }
+		return $real;
+	}
+
+	/**
+	 * Why a redirects setting cannot be saved for $domain, or null. Checks
+	 * shapes, codes, the HTTPS listener and certificate for "https", and
+	 * rules that would redirect to themselves.
+	 */
+	static function redirectsProblem($domain, array $rec, array $r, $certNames = null)
+	{
+		if (!empty($r['https'])) {
+			if (self::httpsPortSuffix() === null) return 'there is no HTTPS listener, so HTTP cannot be sent to HTTPS';
+			if ($certNames !== null) {
+				$covered = false;
+				foreach ($certNames as $n) if (Q_WebServer_DomainUsage::covers($n, $domain)) { $covered = true; break; }
+				if (!$covered) return "the certificate the server presents does not cover $domain";
+			}
+		}
+		if (isset($r['preferredHost']) and $r['preferredHost'] !== null and !in_array($r['preferredHost'], array('www', 'bare'), true)) {
+			return 'preferredHost must be "www", "bare" or null';
+		}
+		$hosts = array($domain);
+		foreach ((array) ($rec['aliases'] ?? array()) as $a) $hosts[] = self::normalize($a);
+		foreach ((array) ($rec['subdomains'] ?? array()) as $sub => $_) {
+			$h = self::subdomainHost($sub, $domain);
+			if ($h !== null) $hosts[] = $h;
+		}
+		foreach ((array) ($r['rules'] ?? array()) as $i => $rule) {
+			$n = $i + 1;
+			if (!is_array($rule)) return "rule $n is not an object";
+			$match = $rule['match'] ?? 'prefix';
+			if (!in_array($match, array('prefix', 'exact', 'host'), true)) return "rule $n: match must be prefix, exact or host";
+			$from = (string) ($rule['from'] ?? '');
+			$to = (string) ($rule['to'] ?? '');
+			if (!in_array((int) ($rule['code'] ?? 301), array(301, 302), true)) return "rule $n: code must be 301 or 302";
+			if (!preg_match('#^https?://[^/\s]+#i', $to)) return "rule $n: the target must be an http:// or https:// URL";
+			if ($match === 'host') {
+				if (!in_array(self::normalize($from), $hosts, true)) return "rule $n: $from is not this domain, an alias or a subdomain";
+			} elseif ($from === '' or $from[0] !== '/') {
+				return "rule $n: from must be a path starting with /";
+			}
+			$th = self::normalize((string) parse_url($to, PHP_URL_HOST));
+			$tp = (string) (parse_url($to, PHP_URL_PATH) ?: '/');
+			if (in_array($th, $hosts, true)) {
+				if ($match === 'host') {
+					if ($th === self::normalize($from)) return "rule $n would redirect $from to itself";
+				} elseif ($tp === $from or ($match === 'prefix' and strncmp($tp, $from, strlen($from)) === 0)) {
+					return "rule $n would redirect $from to itself";
+				}
+			}
+		}
+		return null;
+	}
+
+	/** Store the redirects setting (null clears it). */
+	static function setRedirects($name, $r)
+	{
+		return self::update($name, function ($rec) use ($r) {
+			if ($r === null) unset($rec['redirects']);
+			else $rec['redirects'] = $r;
+			$rec['status'] = $rec['status'] ?? 'active';
+			return $rec;
+		});
+	}
+
+	/** Store the HSTS setting (null clears it). */
+	static function setHsts($name, $h)
+	{
+		return self::update($name, function ($rec) use ($h) {
+			if ($h === null) unset($rec['hsts']);
+			else $rec['hsts'] = $h;
+			$rec['status'] = $rec['status'] ?? 'active';
+			return $rec;
+		});
+	}
+
+	/** Store the error documents (an empty array clears them). */
+	static function setErrorDocs($name, array $docs)
+	{
+		return self::update($name, function ($rec) use ($docs) {
+			if (!$docs) unset($rec['errorDocs']);
+			else $rec['errorDocs'] = $docs;
+			$rec['status'] = $rec['status'] ?? 'active';
+			return $rec;
+		});
 	}
 
 	/** Count a Host header, keeping the most recently seen when full. */
@@ -427,6 +710,7 @@ class Q_WebServer_Domains
 	static function reset()
 	{
 		self::$seen = array();
+		self::$currentHost = null;
 		self::forget();
 	}
 }

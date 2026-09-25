@@ -210,6 +210,9 @@ body[data-auth="unknown"] .tabs,body[data-auth="unknown"] .content[id^="tab-"]{v
 .dom-edit label{font-size:12px;color:var(--dim);margin-top:4px}
 .dom-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .dom-row input{flex:1 1 180px;min-width:0}
+.dom-row select{flex:0 1 auto;width:auto;min-width:0;max-width:100%}
+.dom-edit label.dom-check{display:inline-flex;align-items:center;gap:6px;margin-top:0;font-size:13px;color:var(--txt)}
+.dom-row .dom-check input{flex:none;width:auto;padding:0;margin:0;-webkit-appearance:auto;appearance:auto;accent-color:var(--ac)}
 .dom-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--bdr);border-radius:999px;font-size:12px}
 .dom-x{background:none;border:0;color:var(--dim);cursor:pointer;font-size:14px;line-height:1;min-width:24px;min-height:24px}
 </style></head><body data-auth="panel">
@@ -1434,6 +1437,8 @@ async function loadDomains() {
   if (!r.domains || !r.domains.length) {
     el.innerHTML = '<div class="card"><p style="color:var(--dim)">No domains configured. Add one below, or set <code>Q.webserver.domains</code> in config.</p></div>';
   } else {
+    domainCache = {};
+    r.domains.forEach(function(d) { domainCache[d.domain] = d; });
     el.innerHTML = r.domains.map(function(d) {
       var badge = d.certStatus === 'valid' ? '<span style="color:var(--grn)">\u2713 valid</span>'
         : d.certStatus === 'expiring' ? '<span style="color:var(--yel)">\u26a0 ' + d.certDaysLeft + ' days</span>'
@@ -1471,7 +1476,63 @@ function domainEditor(d) {
     + '<label for="' + id + '-sub">Subdomains</label>'
     + (subs ? '<table class="dom-usage"><thead><tr><th>Name</th><th>Root</th><th></th></tr></thead><tbody>' + subs + '</tbody></table>' : '')
     + '<div class="dom-row"><input id="' + id + '-sub" placeholder="blog" aria-label="Subdomain name" oninput="previewDomainRoot(\'' + D + '\', this.value, document.getElementById(\'' + id + '-subroot\'))"><input id="' + id + '-subroot" placeholder="empty: the standard folder" aria-label="Subdomain root"><button class="btn btn-ghost" onclick="domainSubdomain(\'' + D + '\', document.getElementById(\'' + id + '-sub\').value, document.getElementById(\'' + id + '-subroot\').value)">Add subdomain</button></div>'
+    + domainHostingEditor(d, id, D)
     + '</div>';
+}
+// Redirects, HSTS and error documents (stored per domain; applied before routing).
+function domainHostingEditor(d, id, D) {
+  var rd = d.redirects || {}, h = d.hsts || {}, ed = d.errorDocs || {};
+  var rules = (rd.rules || []).map(function(r, i) {
+    return '<tr><td>' + escH(r.match || 'prefix') + '</td><td><code>' + escH(r.from || '') + '</code></td><td><code>' + escH(r.to || '') + '</code></td><td>' + (r.code === 302 ? 302 : 301) + (r.keepQuery ? ' +query' : '') + '</td><td><button class="btn btn-ghost" style="font-size:12px;padding:3px 8px;color:var(--red)" aria-label="Remove redirect ' + (i + 1) + '" onclick="domainRuleRemove(\'' + D + '\', ' + i + ')">Remove</button></td></tr>';
+  }).join('');
+  var docs = [403, 404, 500, 503].map(function(c) {
+    return '<div class="dom-row"><label for="' + id + '-ed' + c + '" style="min-width:3em">' + c + '</label><input id="' + id + '-ed' + c + '" value="' + escH(ed[c] || '') + '" placeholder="errors/' + c + '.html (under the document root)"></div>';
+  }).join('');
+  return '<label>Redirects</label>'
+    + '<div class="dom-row"><label class="dom-check"><input type="checkbox" id="' + id + '-https"' + (rd.https ? ' checked' : '') + '> HTTP → HTTPS (301)</label>'
+    + '<label for="' + id + '-pref">Preferred host</label><select id="' + id + '-pref"><option value="">either</option><option value="www"' + (rd.preferredHost === 'www' ? ' selected' : '') + '>www.' + D.replace(/^www\./, '') + '</option><option value="bare"' + (rd.preferredHost === 'bare' ? ' selected' : '') + '>' + D.replace(/^www\./, '') + '</option></select>'
+    + '<button class="btn btn-ghost" onclick="domainRedirectsSave(\'' + D + '\', \'' + id + '\')">Save redirects</button></div>'
+    + (rules ? '<div class="dom-usage-wrap"><table class="dom-usage"><thead><tr><th>Match</th><th>From</th><th>To</th><th>Code</th><th></th></tr></thead><tbody>' + rules + '</tbody></table></div>' : '')
+    + '<div class="dom-row"><select id="' + id + '-rmatch" aria-label="Match"><option value="prefix">path prefix</option><option value="exact">exact path</option><option value="host">whole host</option></select>'
+    + '<input id="' + id + '-rfrom" placeholder="/old or blog.' + D + '" aria-label="From"><input id="' + id + '-rto" placeholder="https://' + D + '/new" aria-label="To">'
+    + '<select id="' + id + '-rcode" aria-label="Code"><option>301</option><option>302</option></select>'
+    + '<label class="dom-check"><input type="checkbox" id="' + id + '-rq"> keep query</label>'
+    + '<button class="btn btn-ghost" onclick="domainRuleAdd(\'' + D + '\', \'' + id + '\')">Add redirect</button></div>'
+    + '<label>HSTS</label>'
+    + '<div class="dom-row"><label class="dom-check"><input type="checkbox" id="' + id + '-hsts"' + (h.enabled ? ' checked' : '') + '> send Strict-Transport-Security</label>'
+    + '<input id="' + id + '-hage" type="number" min="0" max="63072000" value="' + escH(String(h.maxAge != null ? h.maxAge : 31536000)) + '" aria-label="max-age seconds" style="max-width:10em">'
+    + '<label class="dom-check"><input type="checkbox" id="' + id + '-hsub"' + (h.includeSubDomains ? ' checked' : '') + '> includeSubDomains</label>'
+    + '<button class="btn btn-ghost" onclick="domainHstsSave(\'' + D + '\', \'' + id + '\')">Save HSTS</button></div>'
+    + '<label>Error documents</label>' + docs
+    + '<div class="dom-row"><button class="btn btn-ghost" onclick="domainErrorDocsSave(\'' + D + '\', \'' + id + '\')">Save error documents</button></div>';
+}
+var domainCache = {};
+function domainRedirectBody(domain, id, rules) {
+  return {domain: domain, https: document.getElementById(id + '-https').checked,
+    preferredHost: document.getElementById(id + '-pref').value || null, rules: rules};
+}
+function domainRulesOf(domain) { return ((domainCache[domain] || {}).redirects || {}).rules || []; }
+function domainRedirectsSave(domain, id) { return domainPost('domains/redirects', domainRedirectBody(domain, id, domainRulesOf(domain))); }
+function domainRuleAdd(domain, id) {
+  var rule = {match: document.getElementById(id + '-rmatch').value, from: document.getElementById(id + '-rfrom').value.trim(),
+    to: document.getElementById(id + '-rto').value.trim(), code: parseInt(document.getElementById(id + '-rcode').value, 10),
+    keepQuery: document.getElementById(id + '-rq').checked};
+  if (!rule.from || !rule.to) return alert('Enter where from and where to');
+  return domainPost('domains/redirects', domainRedirectBody(domain, id, domainRulesOf(domain).concat([rule])));
+}
+function domainRuleRemove(domain, i) {
+  var d = domainCache[domain] || {}, rd = d.redirects || {};
+  var rules = (rd.rules || []).filter(function(_, j) { return j !== i; });
+  return domainPost('domains/redirects', {domain: domain, https: !!rd.https, preferredHost: rd.preferredHost || null, rules: rules});
+}
+function domainHstsSave(domain, id) {
+  return domainPost('domains/hsts', {domain: domain, enabled: document.getElementById(id + '-hsts').checked,
+    maxAge: parseInt(document.getElementById(id + '-hage').value, 10), includeSubDomains: document.getElementById(id + '-hsub').checked});
+}
+function domainErrorDocsSave(domain, id) {
+  var docs = {};
+  [403, 404, 500, 503].forEach(function(c) { var v = document.getElementById(id + '-ed' + c).value.trim(); if (v) docs[c] = v; });
+  return domainPost('domains/errordocs', {domain: domain, docs: docs});
 }
 async function domainPost(route, body) {
   var r = await api(route, body);

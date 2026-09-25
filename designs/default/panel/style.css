@@ -205,5 +205,8 @@ body[data-auth="unknown"] .tabs,body[data-auth="unknown"] .content[id^="tab-"]{v
 .dom-edit label{font-size:12px;color:var(--dim);margin-top:4px}
 .dom-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .dom-row input{flex:1 1 180px;min-width:0}
+.dom-row select{flex:0 1 auto;width:auto;min-width:0;max-width:100%}
+.dom-edit label.dom-check{display:inline-flex;align-items:center;gap:6px;margin-top:0;font-size:13px;color:var(--txt)}
+.dom-row .dom-check input{flex:none;width:auto;padding:0;margin:0;-webkit-appearance:auto;appearance:auto;accent-color:var(--ac)}
 .dom-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--bdr);border-radius:999px;font-size:12px}
 .dom-x{background:none;border:0;color:var(--dim);cursor:pointer;font-size:14px;line-height:1;min-width:24px;min-height:24px}
