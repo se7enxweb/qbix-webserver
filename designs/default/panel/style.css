@@ -225,3 +225,15 @@ body[data-auth="unknown"] .tabs,body[data-auth="unknown"] .content[id^="tab-"]{v
 .traffic-top div{display:flex;justify-content:space-between;gap:10px;min-width:0}
 .traffic-top span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .traffic-logs{display:inline-block;margin-top:6px;font-size:11px;padding:4px 10px}
+.ssl-list{display:flex;flex-direction:column;gap:6px}
+.ssl-cert{border-left:3px solid var(--dim);padding:6px 10px;border-radius:6px;background:rgba(255,255,255,.02);font-size:12px;min-width:0}
+.ssl-cert.ssl-ok{border-left-color:var(--grn)}.ssl-cert.ssl-warning{border-left-color:var(--yel)}
+.ssl-cert.ssl-critical,.ssl-cert.ssl-expired{border-left-color:var(--red)}
+.ssl-cert-top{display:flex;gap:8px;flex-wrap:wrap;overflow-wrap:anywhere}
+.ssl-cert-meta{color:var(--dim);overflow-wrap:anywhere}
+.ssl-src{font-size:11px;color:var(--dim);margin-left:6px}
+.ssl-hist{display:flex;flex-direction:column;gap:2px;font-size:12px;max-height:360px;overflow-y:auto}
+.ssl-hist-row{display:grid;grid-template-columns:max-content max-content minmax(0,1fr);gap:8px;overflow-wrap:anywhere}
+.ssl-hist-t{color:var(--dim)}.ssl-hist-i{color:var(--dim)}
+.ssl-job{font-size:12px;margin-bottom:6px}
+@media(max-width:600px){.ssl-hist-row{grid-template-columns:minmax(0,1fr)}}

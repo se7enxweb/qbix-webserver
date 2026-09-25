@@ -356,6 +356,16 @@ class Q_WebServer_Panel
 				return self::apiDomainCertIssue($parsed);
 			case 'domains/cert/job':
 				return self::apiDomainCertJob($parsed);
+			case 'ssl/overview':
+				return Q_WebServer_Certificate_Admin::overview();
+			case 'ssl/certs':
+				return Q_WebServer_Certificate_Admin::certs();
+			case 'ssl/history':
+				return Q_WebServer_Certificate_Admin::history((int) ($parsed['query']['limit'] ?? 100));
+			case 'ssl/settings':
+			case 'ssl/renew':
+			case 'ssl/reload':
+				return self::apiSsl($route, $parsed);
 			case 'domains/traffic':
 				return self::apiDomainTraffic($parsed);
 			case 'domains/hosts':
@@ -2541,6 +2551,24 @@ class Q_WebServer_Panel
 		if (!isset($records[$domain])) return ['status' => 404, 'error' => "No domain $domain"];
 		$config = (array) Q_Config::get('Q', 'web', 'https', array());
 		return Q_WebServer_Certificate_Inspector::forDomain($domain, self::domainHosts($domain, $records[$domain]), $config);
+	}
+
+	/**
+	 * POST ssl/settings, ssl/renew and ssl/reload: the SSL tab's changes.
+	 * Each takes a JSON object; settings and renew answer 409 until the
+	 * body carries confirm. Nothing here returns key material.
+	 */
+	static function apiSsl($route, $parsed)
+	{
+		if (strtoupper((string) ($parsed['method'] ?? 'POST')) !== 'POST') return ['status' => 405, 'error' => 'Use POST'];
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		if ($body === null and trim((string) ($parsed['body'] ?? '')) === '') $body = array();
+		if (!is_array($body)) return ['status' => 400, 'error' => 'The body must be a JSON object'];
+		switch ($route) {
+			case 'ssl/settings': return Q_WebServer_Certificate_Admin::saveSettings($body);
+			case 'ssl/renew': return Q_WebServer_Certificate_Admin::renew($body);
+			default: return Q_WebServer_Certificate_Admin::reload();
+		}
 	}
 
 	/**

@@ -291,6 +291,52 @@ directories, hotlink protection, a PHP version and settings per domain, limits,
 quotas and disk usage, backups, web statistics history, IP address assignment,
 a read-only DNS view, cron per domain, and a file manager.
 
+### SSL tab
+
+`/Q/panel/(tab)/ssl` is the server's certificate administration, one page for
+what the Domains tab shows per domain.
+
+- **Served certificate**: the mode, the certificate the HTTPS listener hands
+  out (issuer, names, validity, days left, SHA-256 fingerprint, key type and
+  size, file), the fallback (`https.fallback`) and whether it is in use now
+  because the configured certificate could not be loaded, and the watcher: how
+  often it looks, when it last looked, when the certificate last changed.
+- **Certificates by expiry**: every certificate the server knows (served,
+  configured, the self-signed store, each one issued under the ACME
+  directory), each listed once with all its roles, soonest-expiring first and
+  coloured: red when expired or 7 days or fewer are left, amber at 21 or
+  fewer, green otherwise.
+- **Settings**: the mode, the ACME email, directory and host names, and
+  *renew at* (the share of the lifetime left when renewal starts). Each value
+  says whether it comes from the configuration or the panel. Saving asks first,
+  listing each change, and says what it takes: a mode change applies when the
+  server restarts, the others at the next certificate check. What a mode needs
+  is checked before it is saved (`manual` and `files` need a usable
+  `https.cert` and `https.key`; `acme` needs a host name). The values are kept
+  in the panel store (`acl/panel.json`, key `ssl`), win over the configuration
+  file, and are laid over it when the server starts.
+- **Actions**: **Renew / issue now** starts the ACME job in the background
+  and follows it; it is offered only in a mode this server issues in (`acme`,
+  `letsencrypt`). With certificate files managed elsewhere (`manual`, `files`,
+  `archive`, `pkcs12`), `certbot`, `remote` or `self-signed`, the tab says so
+  and offers no issuing. **Reload certificate** reads the files again and puts
+  the current pair in front of new connections at once, without a restart.
+- **Events and history**: certificate events (loaded, stored, created,
+  failed, error, renewals, jobs, settings changes, reloads) with their time,
+  hosts and reason, newest first, plus the state of each issuing job. They are
+  kept in the state directory (`/var/lib/qbix/ssl/history.json`, or the
+  overlay's own), 0600, the last 200 only.
+
+Private keys are never shown or returned: certificates are read for their
+public part, key files appear by path only, and the history drops any key
+material an event might carry.
+
+API (signed in): `GET ssl/overview`, `GET ssl/certs`, `GET ssl/history[?limit=]`,
+`POST ssl/settings {mode?, email?, directory?, renewAt?, domains?, confirm}`,
+`POST ssl/renew {confirm}`, `POST ssl/reload`. `ssl/settings` and `ssl/renew`
+answer 409 with what would happen until the body carries `confirm: true`; a
+refused value is 400 with the reasons.
+
 ### Bookmarkable tabs
 
 Every tab has its own address: `/Q/panel/(tab)/logs`, `/Q/panel/(tab)/system`

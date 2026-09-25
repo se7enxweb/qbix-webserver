@@ -155,6 +155,15 @@ class Q_WebServer_Certs
 	 */
 	static $source = null;
 
+	/**
+	 * When the watcher last looked, and when the certificate in use last
+	 * changed (Unix times, null before the first), for the control panel.
+	 * @property $lastCheck
+	 * @static
+	 */
+	static $lastCheck = null;
+	static $lastChange = null;
+
 	/** @var string|null the configured pair, kept while a self-signed one stands in */
 	private static $configuredCert = null;
 	private static $configuredKey = null;
@@ -234,6 +243,8 @@ class Q_WebServer_Certs
 	 */
 	static function check()
 	{
+		self::$lastCheck = time();
+		if (class_exists('Q_WebServer_Certificate_Admin')) Q_WebServer_Certificate_Admin::mark('last-check');
 		try {
 			// The source first: a renewal it is due (acme, certbot, remote) is
 			// started in the background, and when its own files changed -- an
@@ -508,6 +519,8 @@ class Q_WebServer_Certs
 	{
 		self::$signature = self::fileSignature();
 		if (!self::activate()) return;
+		self::$lastChange = time();
+		if (class_exists('Q_WebServer_Certificate_Admin')) Q_WebServer_Certificate_Admin::mark('last-change');
 		Q_WebServer::reloadTls();
 	}
 

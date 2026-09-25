@@ -381,6 +381,16 @@ For monitoring, `ssl:show --json` gives the mode, each certificate's `usable`,
 next attempt. Alert when `daysLeft` falls below 14 for a CA certificate: renewal
 normally happens at 30.
 
+### The control panel
+
+The panel's **SSL** tab (`/Q/panel/(tab)/ssl`) shows the same as `ssl:show` in
+a browser: the served certificate, every known certificate by expiry, the
+fallback and the watcher, and the certificate history. It edits the safe
+settings (mode, ACME email and directory, `renewAt`, the host names), renews
+in the issuing modes, and reloads the certificate without a restart. See
+[dashboard.md](dashboard.md#ssl-tab). In `manual` mode, with the certificate
+files kept by another tool, it shows those files and offers no issuing.
+
 ---
 
 ### Troubleshooting

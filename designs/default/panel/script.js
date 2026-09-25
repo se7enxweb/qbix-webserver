@@ -355,6 +355,7 @@ function showTab(name, opts) {
   if (name==='system') loadSystem();
   if (name==='servers') loadServers();
   if (name==='domains') loadDomains();
+  if (name==='ssl') loadSsl();
   if (name==='autohost') loadAutohost();
   if (name==='security') loadSecurity();
   if (name==='workers') loadWorkers();
@@ -1208,6 +1209,135 @@ function pollCertJob(domain, id) {
   }, 3000);
 }
 async function provisionCert(n) { return issueDomainCert(n); }
+
+// ── SSL ─────────────────────────────────────────────
+// The server's certificate administration: what is served, every certificate
+// by expiry, the settings the panel may change, renew and reload, and the
+// history. The API never returns key material; key files are shown by path.
+function sslDays(c) {
+  if (!c || c.daysLeft === null || c.daysLeft === undefined) return '';
+  var cls = {expired: 'cert-bad', critical: 'cert-bad', warning: 'cert-warn', ok: 'cert-ok'}[c.state] || '';
+  return '<b class="' + cls + '">' + (c.daysLeft < 0 ? 'expired' : c.daysLeft + ' days left') + '</b>';
+}
+function sslKey(k) { return k ? escH(k.type + (k.curve ? ' ' + k.curve : ' ' + k.bits)) : '?'; }
+function sslTime(t) { return t ? new Date(t * 1000).toLocaleString() : 'not yet'; }
+async function loadSsl() { loadSslOverview(); loadSslCerts(); loadSslHistory(); }
+async function loadSslOverview() {
+  var el = document.getElementById('ssl-overview'), r;
+  try { r = await api('ssl/overview'); } catch (e) { return; }
+  if (!r || r.error) { el.innerHTML = '<div class="card"><span class="cert-bad">' + escH((r && r.error) || 'Could not read the SSL state') + '</span></div>'; return; }
+  var c = r.served, h = '<div class="card"><h3>Served certificate</h3>';
+  if (c) {
+    h += '<div class="cert-grid">'
+      + '<span>Mode</span><span><b>' + escH(r.mode) + '</b>' + (r.canIssue ? ' — this server issues and renews it' : ' — issuing not offered (see below)') + '</span>'
+      + (r.configured && r.configured.cert ? '<span>Configured</span><span><code style="font-size:11px">' + escH(r.configured.cert) + '</code></span>' : '')
+      + '<span>Issuer</span><span>' + escH(c.issuer || '?') + (c.selfSigned ? ' <em class="cert-warn">(self-signed)</em>' : '') + '</span>'
+      + '<span>Names</span><span>' + (c.names || []).map(escH).join(', ') + '</span>'
+      + '<span>Valid</span><span>' + certDate(c.notBefore) + ' → ' + certDate(c.notAfter) + ' ' + sslDays(c) + '</span>'
+      + '<span>Key</span><span>' + sslKey(c.key) + '</span>'
+      + '<span>SHA-256</span><span><code style="font-size:11px">' + escH(c.fingerprint) + '</code></span>'
+      + '<span>File</span><span><code style="font-size:11px">' + escH(c.file) + '</code></span>'
+      + '</div>';
+  } else {
+    h += '<p style="color:var(--dim);font-size:12px">No certificate is being served (mode <b>' + escH(r.mode) + '</b>; HTTPS may be off).</p>';
+  }
+  h += '<div class="cert-grid" style="margin-top:8px">'
+    + '<span>Fallback</span><span>' + escH(r.fallback) + (r.usingFallback ? ' <b class="cert-warn">— in use now: the configured certificate could not be loaded</b>' : ' (not in use)') + '</span>'
+    + '<span>Watcher</span><span>every ' + escH(r.watch.interval) + ' s; last check ' + escH(sslTime(r.watch.lastCheck)) + '; last change ' + escH(sslTime(r.watch.lastChange)) + '</span>'
+    + '</div>';
+  h += '<div class="btn-row" style="margin-top:10px">';
+  if (r.canIssue) h += '<button class="btn btn-primary" onclick="sslRenew()">Renew / issue now</button>';
+  h += '<button class="btn btn-ghost" onclick="sslReload()">Reload certificate</button><span class="cert-job" id="ssl-job"></span></div>';
+  if (!r.canIssue) h += '<p style="font-size:12px;color:var(--dim);margin-top:6px">Issuing is not offered here: ' + escH(r.issueWhy) + '</p>';
+  el.innerHTML = h + '</div>';
+  sslSettingsForm(r);
+}
+async function loadSslCerts() {
+  var el = document.getElementById('ssl-certs'), r;
+  try { r = await api('ssl/certs'); } catch (e) { return; }
+  if (!r || r.error || !r.certificates) { el.innerHTML = '<span class="cert-bad">' + escH((r && r.error) || 'Could not list the certificates') + '</span>'; return; }
+  if (!r.certificates.length) { el.innerHTML = '<p style="color:var(--dim);font-size:12px">No certificates found.</p>'; return; }
+  el.innerHTML = '<div class="ssl-list">' + r.certificates.map(function (c) {
+    return '<div class="ssl-cert ssl-' + escH(c.state) + '"><div class="ssl-cert-top"><b>' + escH((c.names || [])[0] || c.subject || '?') + '</b> ' + sslDays(c) + '</div>'
+      + '<div class="ssl-cert-meta">' + escH((c.source || []).join(', ')) + ' · ' + escH(c.issuer || '?') + ' · until ' + certDate(c.notAfter) + ' · ' + sslKey(c.key) + '</div>'
+      + ((c.names || []).length > 1 ? '<div class="ssl-cert-meta">' + c.names.map(escH).join(', ') + '</div>' : '')
+      + '<div class="ssl-cert-meta"><code>' + escH(c.file) + '</code></div></div>';
+  }).join('') + '</div>';
+}
+function sslSettingsForm(r) {
+  var s = r.settings || {}, el = document.getElementById('ssl-settings');
+  var src = function (k) { return '<span class="ssl-src">' + escH((s[k] || {}).source || '') + '</span>'; };
+  var v = function (k) { var x = (s[k] || {}).value; return x === null || x === undefined ? '' : x; };
+  el.innerHTML = '<div class="form-row"><label for="ssl-mode">Mode</label><select id="ssl-mode">'
+    + (r.modes || []).map(function (m) { return '<option' + (m === v('mode') ? ' selected' : '') + '>' + escH(m) + '</option>'; }).join('')
+    + '</select>' + src('mode') + '</div>'
+    + '<div class="form-row"><label for="ssl-email">ACME email</label><input id="ssl-email" value="' + escH(v('email')) + '" placeholder="admin@example.com">' + src('email') + '</div>'
+    + '<div class="form-row"><label for="ssl-dir">Directory</label><input id="ssl-dir" value="' + escH(v('directory')) + '" placeholder="letsencrypt, letsencrypt-staging or https://…">' + src('directory') + '</div>'
+    + '<div class="form-row"><label for="ssl-renew">Renew at</label><input id="ssl-renew" type="number" step="0.01" min="0.05" max="0.9" value="' + escH(v('renewAt')) + '">' + src('renewAt') + '</div>'
+    + '<div class="form-row"><label for="ssl-hosts">Hosts</label><input id="ssl-hosts" value="' + escH((v('domains') || []).join(', ')) + '" placeholder="example.com, www.example.com">' + src('domains') + '</div>'
+    + '<p style="font-size:12px;color:var(--dim)">Renew at is the share of the lifetime left when renewal starts. A mode change takes effect when the server restarts; the others at the next certificate check. Keys are never shown here.</p>'
+    + '<div class="btn-row" style="margin-top:8px"><button class="btn btn-primary" onclick="sslSave()">Save settings</button></div>';
+}
+async function sslSave() {
+  var b = {
+    mode: document.getElementById('ssl-mode').value,
+    email: document.getElementById('ssl-email').value.trim(),
+    directory: document.getElementById('ssl-dir').value.trim() || 'letsencrypt',
+    renewAt: document.getElementById('ssl-renew').value,
+    domains: document.getElementById('ssl-hosts').value
+  };
+  var r = await api('ssl/settings', b);
+  if (r && r.confirm) {
+    var list = Object.keys(r.changes || {}).map(function (k) { return k + ': ' + JSON.stringify(r.changes[k].from) + ' → ' + JSON.stringify(r.changes[k].to); }).join('\n');
+    if (!confirm(r.error + '\n\n' + list)) return;
+    b.confirm = true;
+    r = await api('ssl/settings', b);
+  }
+  if (!r || r.error) { alert((r && r.error) || 'Could not save'); return; }
+  if (r.note) alert(r.note);
+  loadSsl();
+}
+async function sslRenew() {
+  var r = await api('ssl/renew', {});
+  if (r && r.confirm) { if (!confirm(r.error)) return; r = await api('ssl/renew', {confirm: true}); }
+  if (!r || r.error) { alert((r && r.error) || 'Could not start'); return; }
+  var el = document.getElementById('ssl-job');
+  if (el) el.innerHTML = certJobText(r);
+  sslPoll();
+}
+var sslPollTimer = null;
+function sslPoll() {
+  if (sslPollTimer) return;
+  sslPollTimer = setInterval(async function () {
+    var h;
+    try { h = await api('ssl/history?limit=20'); } catch (e) { h = null; }
+    var j = h && h.jobs ? h.jobs.filter(function (x) { return x.state === 'running' || x.state === 'queued'; }) : [];
+    var el = document.getElementById('ssl-job');
+    if (!h || !el || !j.length) { clearInterval(sslPollTimer); sslPollTimer = null; loadSsl(); return; }
+    el.innerHTML = certJobText(j[0]);
+  }, 3000);
+}
+async function sslReload() {
+  var r = await api('ssl/reload', {});
+  if (!r || r.error) { alert((r && r.error) || 'Could not reload'); return; }
+  var el = document.getElementById('ssl-job');
+  if (el) el.innerHTML = r.changed ? '<span class="cert-ok">Reloaded: a new certificate is served</span>' : 'Reloaded: the same certificate is served';
+  loadSslCerts(); loadSslHistory();
+}
+async function loadSslHistory() {
+  var el = document.getElementById('ssl-history'), r;
+  try { r = await api('ssl/history?limit=100'); } catch (e) { return; }
+  if (!r || r.error) { el.innerHTML = '<span class="cert-bad">' + escH((r && r.error) || 'Could not read the history') + '</span>'; return; }
+  var h = '';
+  (r.jobs || []).forEach(function (j) { h += '<div class="ssl-job">Issuing job <b>' + escH(j.name) + '</b>: ' + certJobText(j) + '</div>'; });
+  if (!r.entries.length) h += '<p style="color:var(--dim);font-size:12px">Nothing recorded yet.</p>';
+  else h += '<div class="ssl-hist">' + r.entries.map(function (e) {
+    var bad = /error|failed|exhausted/.test(e.event);
+    var info = Object.keys(e.info || {}).map(function (k) { var x = e.info[k]; return escH(k) + ': ' + escH(Array.isArray(x) ? x.join(', ') : x); }).join(' · ');
+    return '<div class="ssl-hist-row"><span class="ssl-hist-t">' + escH(sslTime(e.time)) + '</span><b class="' + (bad ? 'cert-bad' : '') + '">' + escH(e.event) + (e.count > 1 ? ' ×' + escH(e.count) : '') + '</b><span class="ssl-hist-i">' + info + '</span></div>';
+  }).join('') + '</div>';
+  el.innerHTML = h + '<p style="font-size:11px;color:var(--dim);margin-top:6px">' + escH(r.total) + ' entries kept in <code>' + escH(r.file) + '</code></p>';
+}
 
 // ── Security & Attestation ──────────────────────────
 async function loadSecurity() {

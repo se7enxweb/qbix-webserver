@@ -722,6 +722,15 @@ Q_WebServer_Certificate_Events::attach(new Q_WebServer_Certificate_Reporter(
 	Q_WebServer_Certificate_Reporter::levelFromOptions(array('quiet' => !empty($opts['quiet']),
 		'verbose' => !empty($opts['verbose']), 'debug' => !empty($opts['debug'])))));
 
+// Certificate events also go to the bounded history the control panel's SSL
+// tab shows, and the settings changed there win over the configuration file.
+Q_WebServer_Certificate_Events::attach(new Q_WebServer_Certificate_History());
+try {
+	Q_WebServer_Certificate_Admin::applyOverrides();
+} catch (Throwable $e) {
+	fwrite(STDERR, "SSL panel settings not applied: " . $e->getMessage() . "\n");
+}
+
 // Framework preset (--preset=laravel, etc.)
 if ($opts['preset']) {
 	require_once __DIR__ . '/src/Q/WebServer/Compat.php';

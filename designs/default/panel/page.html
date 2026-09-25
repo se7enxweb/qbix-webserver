@@ -13,6 +13,7 @@
 <div class="tabs">
   <div class="tab active" data-tab="apps" onclick="showTab('apps')">Apps</div>
   <div class="tab" data-tab="domains" onclick="showTab('domains')">Domains</div>
+  <div class="tab" data-tab="ssl" onclick="showTab('ssl')">SSL</div>
   <div class="tab" data-tab="autohost" onclick="showTab('autohost')">Autohost</div>
   <div class="tab" data-tab="security" onclick="showTab('security')">Security</div>
   <div class="tab" data-tab="scripts" onclick="showTab('scripts')">Scripts</div>
@@ -95,6 +96,24 @@
   </div>
 
   <div id="sec-trust" style="margin-top:16px"></div>
+</div>
+
+<!-- SSL TAB -->
+<div id="tab-ssl" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">SSL / TLS</h2>
+  <div id="ssl-overview"></div>
+  <div class="card" style="margin-top:16px">
+    <h3>Certificates by expiry</h3>
+    <div id="ssl-certs"></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Settings</h3>
+    <div id="ssl-settings"></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Events and history</h3>
+    <div id="ssl-history"></div>
+  </div>
 </div>
 
 <!-- AUTOHOST TAB -->
