@@ -218,3 +218,10 @@ body[data-auth="unknown"] .tabs,body[data-auth="unknown"] .content[id^="tab-"]{v
 .dom-row .dom-check input{flex:none;width:auto;padding:0;margin:0;-webkit-appearance:auto;appearance:auto;accent-color:var(--ac)}
 .dom-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--bdr);border-radius:999px;font-size:12px}
 .dom-x{background:none;border:0;color:var(--dim);cursor:pointer;font-size:14px;line-height:1;min-width:24px;min-height:24px}
+.dom-traffic{margin-top:8px}
+.traffic-classes b{font-weight:600;margin-right:6px}
+.tc-2xx{color:var(--green,#3fb950)}.tc-3xx{color:var(--cyan,#39c5cf)}.tc-4xx{color:var(--yellow,#d29922)}.tc-5xx{color:var(--red,#f85149)}
+.traffic-top{margin-top:6px;font-size:12px;display:grid;gap:2px}
+.traffic-top div{display:flex;justify-content:space-between;gap:10px;min-width:0}
+.traffic-top span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.traffic-logs{display:inline-block;margin-top:6px;font-size:11px;padding:4px 10px}

@@ -107,10 +107,10 @@ A host can keep its own access and error log, by adding a `log` key to the same 
 
 `"log": true` names the files after the host — `example.com-access.log` and `example.com-error.log`, in the server's own log directory. The object form overrides the directory, either filename, or all three; whatever is left out is named after the host.
 
-A host with no `log` key writes to the server's access log, as before, and so does a request that arrives without a `Host` header. The named formats do not carry the host, so if you would rather keep one log for everything, ask for the header in a custom format instead:
+A host with no `log` key writes to the server's access log, as before, and so does a request that arrives without a `Host` header. The default format, `vhost`, ends each line with the Host as one quoted field, so one log can still be split by domain (the control panel's Logs tab filters on it). `qbix` is the same line without that field, as this server wrote it before; ask for it, or any custom format, to keep the older shape:
 
 ```json
-"log": { "format": "%h %l %u %t \"%r\" %>s %b %{Host}i" }
+"log": { "format": "qbix" }
 ```
 
 A host can also set `fileMode` and `dirMode`, and inherits the server's when it does not. That is what makes per-host logs useful where each site runs as its own user — the host writing the file is the one that owns it:

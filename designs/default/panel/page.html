@@ -264,6 +264,7 @@
         <option value="PATCH">PATCH</option>
       </select>
       <input id="log-status" type="text" placeholder="Status" style="width:70px" onchange="logControlChanged()">
+      <input id="log-host" type="text" placeholder="Host" aria-label="Host" style="width:150px" onchange="logControlChanged()">
       <button id="log-tail" class="btn btn-ghost" onclick="toggleLogTail()">Tail: off</button>
       <button class="btn btn-ghost" onclick="copyLogLink()">Copy link</button>
       <button class="btn btn-ghost" onclick="downloadLog()">Download</button>

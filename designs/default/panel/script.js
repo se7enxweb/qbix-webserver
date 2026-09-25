@@ -325,7 +325,7 @@ function buildViewParamUrl(params) {
   return '/Q/panel' + (parts.length ? parts.join('') : '');
 }
 // Log filters belong to the Logs tab; any other tab's address is just its name.
-var LOG_PARAMS = ['type', 'lines', 'filter', 'method', 'status'];
+var LOG_PARAMS = ['type', 'lines', 'filter', 'method', 'status', 'host'];
 function setViewParam(name, value) {
   var params = getViewParams();
   var changed = name === 'tab' && params.tab !== value;
@@ -946,10 +946,11 @@ async function loadDomains() {
       var btns = ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + d.domain + '\')">Remove</button>';
       return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><div><strong>' + escH(d.domain) + '</strong></div><div>' + btns + '</div></div>'
         + '<div class="dom-cert" id="' + certBoxId(d.domain) + '"><span style="color:var(--dim);font-size:12px">Checking the certificate\u2026</span></div>'
+        + '<div class="dom-traffic" id="' + trafficBoxId(d.domain) + '"></div>'
         + (d.source === 'panel' ? domainEditor(d) : (d.root ? '<div style="font-size:12px;color:var(--dim);margin-top:4px">Root: ' + escH(d.root) + ' (from config)</div>' : ''))
         + '</div>';
     }).join('');
-    r.domains.forEach(function(d) { loadDomainCert(d.domain); });
+    r.domains.forEach(function(d) { loadDomainCert(d.domain); loadDomainTraffic(d.domain); });
   }
   loadHosts();
 }
@@ -1110,6 +1111,37 @@ async function previewDomainRoot(domain, name, input) {
   } catch (e) {}
 }
 async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; var r = await api('domains/remove',{domain:n, confirm:true}); if (r && r.error) alert(r.error); loadDomains(); }
+// ── A domain's traffic, counted since the server started ──
+function trafficBoxId(domain) { return 'traffic-' + String(domain).replace(/[^a-z0-9]/g, '-'); }
+async function loadDomainTraffic(domain) {
+  var box = document.getElementById(trafficBoxId(domain));
+  if (!box) return;
+  var r;
+  try { r = await api('domains/traffic?domain=' + encodeURIComponent(domain)); } catch (e) { return; }
+  if (!r || r.error) { box.innerHTML = '<span style="color:var(--red);font-size:12px">' + escH((r && r.error) || 'could not read the traffic') + '</span>'; return; }
+  var logs = '/Q/panel/(tab)/logs/(host)/' + encodeURIComponent(domain);
+  var cls = r.classes || {};
+  var h = '<div class="cert-head">Traffic <span style="font-weight:400">' + escH(r.window || '') + ' (' + new Date((r.since || 0) * 1000).toISOString().slice(0, 16).replace('T', ' ') + ')</span></div>'
+    + '<div class="cert-grid">'
+    + '<span>Requests</span><span>' + (r.requests || 0) + '</span>'
+    + '<span>Sent</span><span>' + fmtBytesPlain(r.bytes || 0) + '</span>'
+    + '<span>Status</span><span class="traffic-classes">'
+    + ['2xx', '3xx', '4xx', '5xx'].map(function (k) { return '<b class="tc-' + k + '">' + k + ' ' + (cls[k] || 0) + '</b>'; }).join(' ') + '</span>'
+    + '<span>Last seen</span><span>' + (r.last ? new Date(r.last * 1000).toISOString().slice(0, 19).replace('T', ' ') : 'not yet') + '</span>'
+    + '</div>';
+  if (r.top && r.top.length) {
+    h += '<div class="traffic-top">' + r.top.map(function (t) { return '<div><span>' + escH(t.path) + '</span><b>' + t.count + '</b></div>'; }).join('') + '</div>';
+  }
+  h += '<a class="btn btn-ghost traffic-logs" href="' + logs + '" onclick="event.preventDefault();openHostLogs(\'' + escH(domain) + '\')">View its log lines</a>';
+  box.innerHTML = h;
+}
+function openHostLogs(domain) {
+  var params = getViewParams();
+  params.tab = 'logs'; params.host = domain;
+  history.pushState({viewParams: params}, '', buildViewParamUrl(params));
+  showTab('logs', {silent: true});
+}
+
 // ── A domain's certificate: which one covers it, and issuing one ──
 function certBoxId(domain) { return 'cert-' + String(domain).replace(/[^a-z0-9]/g, '-'); }
 function certDate(t) { return t ? new Date(t * 1000).toISOString().slice(0, 10) : '?'; }
@@ -1377,7 +1409,8 @@ function getLogParams() {
     lines: lines,
     filter: (p.filter || '').trim(),
     method: (p.method || '').trim().toUpperCase(),
-    status: (p.status || '').trim()
+    status: (p.status || '').trim(),
+    host: (p.host || '').trim().toLowerCase()
   };
 }
 
@@ -1388,6 +1421,7 @@ function setLogParams(changes) {
   if (changes.filter !== undefined) { if (changes.filter) params.filter = changes.filter; else delete params.filter; }
   if (changes.method !== undefined) { if (changes.method) params.method = changes.method; else delete params.method; }
   if (changes.status !== undefined) { if (changes.status) params.status = changes.status; else delete params.status; }
+  if (changes.host !== undefined) { if (changes.host) params.host = changes.host; else delete params.host; }
   history.replaceState({viewParams: params}, '', buildViewParamUrl(params));
   updateLogControls();
 }
@@ -1404,6 +1438,8 @@ function updateLogControls() {
   if (m) m.value = p.method;
   var s = document.getElementById('log-status');
   if (s) s.value = p.status;
+  var hh = document.getElementById('log-host');
+  if (hh) hh.value = p.host;
 }
 
 function logControlChanged() {
@@ -1412,7 +1448,8 @@ function logControlChanged() {
     lines: document.getElementById('log-lines').value,
     filter: document.getElementById('log-filter').value,
     method: document.getElementById('log-method').value,
-    status: document.getElementById('log-status').value
+    status: document.getElementById('log-status').value,
+    host: (document.getElementById('log-host') || {value: ''}).value.trim().toLowerCase()
   });
   loadLogs();
 }
@@ -1429,7 +1466,8 @@ async function loadLogs() {
     + '&lines=' + encodeURIComponent(p.lines)
     + '&filter=' + encodeURIComponent(p.filter)
     + '&method=' + encodeURIComponent(p.method)
-    + '&status=' + encodeURIComponent(p.status);
+    + '&status=' + encodeURIComponent(p.status)
+    + (p.host ? '&host=' + encodeURIComponent(p.host) : '');
   var el = document.getElementById('logs-output');
   var stats = document.getElementById('log-stats');
   if (el) el.innerHTML = '<p style="color:var(--dim)">Loading…</p>';
@@ -1451,7 +1489,7 @@ async function loadLogs() {
     renderLogs(logLastLines, p);
     if (stats) {
       var shown = r.lines ? r.lines.length : 0;
-      var filtering = p.filter || p.method || p.status;
+      var filtering = p.filter || p.method || p.status || p.host;
       var depth = r.complete ? 'the whole file' : 'the last ' + fmtBytesPlain(r.scanned || 0);
       stats.textContent = (filtering
         ? shown + ' of ' + (r.matched || 0) + ' matching lines in ' + depth

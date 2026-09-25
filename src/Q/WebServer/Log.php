@@ -22,7 +22,7 @@
  *     "error":            true,
  *     "accessName":       "access.log",
  *     "errorName":        "error.log",
- *     "format":           "qbix",
+ *     "format":           "vhost",
  *     "bufferSize":       65536,
  *     "flushInterval":    1,
  *     "maxSize":          52428800,
@@ -77,7 +77,7 @@
  * or one for a host with no log of its own, goes to the server's
  * access log. Each host's files rotate, archive and prune on the
  * same terms as the server's own.
- *   format: "qbix" (default), "combined", "common", or a format string.
+ *   format: "vhost" (default), "qbix", "combined", "common", or a format string.
  *
  * Format strings take the Apache tokens that make sense here:
  *
@@ -95,7 +95,8 @@
  *
  *   common    %h %l %u %t "%r" %>s %b
  *   combined  common + "%{Referer}i" "%{User-Agent}i"
- *   qbix      combined + " %{ms}T" -- what this server has always written
+ *   qbix      combined + " %{ms}T" -- what this server wrote until the Host was added
+ *   vhost     qbix + ' "%{Host}i"' -- the default: the domain each line was for
  *
  * @class Q_WebServer_Log
  */
@@ -170,7 +171,7 @@ class Q_WebServer_Log
 		self::$maxSize = (int) Q::ifset($config, 'maxSize', 52428800);
 		self::$archiveAfterDays = (int) Q::ifset($config, 'archiveAfterDays', 2);
 		self::$deleteAfterDays = (int) Q::ifset($config, 'deleteAfterDays', 30);
-		self::$format = self::resolveFormat(Q::ifset($config, 'format', 'qbix'));
+		self::$format = self::resolveFormat(Q::ifset($config, 'format', 'vhost'));
 		self::$bufferSize = (int) Q::ifset($config, 'bufferSize', 65536);
 		self::$flushInterval = (float) Q::ifset($config, 'flushInterval', 1.0);
 
@@ -259,8 +260,13 @@ class Q_WebServer_Log
 			// combined, plus the response time. Kept as the default so an
 			// existing log keeps its shape and whatever parses it keeps working.
 			'qbix'     => '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i" %{ms}T',
+			// qbix, plus the Host the request was for, as one quoted field
+			// at the end: the default, so one log can be filtered by domain.
+			// Everything that reads the qbix shape reads this unchanged,
+			// since the new field comes after all of it.
+			'vhost'    => '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i" %{ms}T "%{Host}i"',
 		);
-		if (!is_string($name) or $name === '') return $named['qbix'];
+		if (!is_string($name) or $name === '') return $named['vhost'];
 		return isset($named[$name]) ? $named[$name] : $name;
 	}
 
@@ -357,6 +363,12 @@ class Q_WebServer_Log
 	static function access($ip, $method, $uri, $status, $size, $referer, $ua, $ms, $extra = array())
 	{
 		$headers = $extra['headers'] ?? array();
+		// Counted per host whether or not a log is written, so the panel's
+		// Domains tab has traffic numbers even with logging switched off.
+		if (class_exists('Q_WebServer_Traffic')) {
+			Q_WebServer_Traffic::record($headers['host'] ?? ($extra['host'] ?? ''), $status, $size,
+				(string) ($extra['path'] ?? $uri));
+		}
 		// A virtual host with its own log takes the line; everything else,
 		// including a request that arrived without a Host header, goes to
 		// the server's own access log.
@@ -375,7 +387,7 @@ class Q_WebServer_Log
 		if ($ua !== '' and $ua !== null and !isset($headers['user-agent'])) {
 			$headers['user-agent'] = $ua;
 		}
-		$line = self::formatAccess(self::$format ?: self::resolveFormat('qbix'), array(
+		$line = self::formatAccess(self::$format ?: self::resolveFormat('vhost'), array(
 			'ip' => $ip, 'method' => $method, 'uri' => $uri,
 			'path' => $extra['path'] ?? null, 'query' => $extra['query'] ?? '',
 			'protocol' => $extra['protocol'] ?? 'HTTP/1.1',

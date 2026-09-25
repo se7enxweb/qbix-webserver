@@ -356,6 +356,8 @@ class Q_WebServer_Panel
 				return self::apiDomainCertIssue($parsed);
 			case 'domains/cert/job':
 				return self::apiDomainCertJob($parsed);
+			case 'domains/traffic':
+				return self::apiDomainTraffic($parsed);
 			case 'domains/hosts':
 				return self::apiHostsFile();
 			case 'domains/hosts/add':
@@ -2512,6 +2514,25 @@ class Q_WebServer_Panel
 	}
 
 	/** GET domains/cert?domain=… -- the certificate covering a domain, and whether it can be issued here. */
+	/**
+	 * GET domains/traffic?domain= -- requests, bytes, status classes, the
+	 * busiest paths and when it was last seen, for the domain with its
+	 * aliases and subdomains, counted since the server started.
+	 */
+	static function apiDomainTraffic($parsed)
+	{
+		$domain = Q_WebServer_Domains::normalize(self::queryValue($parsed, 'domain'));
+		if (!Q_WebServer_Domains::validName($domain)) return ['status' => 400, 'error' => 'Invalid domain name'];
+		$records = Q_WebServer_Domains::records();
+		if (!isset($records[$domain])) return ['status' => 404, 'error' => "No domain $domain"];
+		$names = self::domainHosts($domain, $records[$domain]);
+		$sum = Q_WebServer_Traffic::summary($names, 10);
+		$sum['domain'] = $domain;
+		$sum['names'] = array_values($names);
+		$sum['window'] = 'since the server started';
+		return $sum;
+	}
+
 	static function apiDomainCert($parsed)
 	{
 		$domain = Q_WebServer_Domains::normalize(self::queryValue($parsed, 'domain'));
@@ -2859,6 +2880,18 @@ class Q_WebServer_Panel
 		// of which can be reconstructed from the config key alone.
 		// ?host= picks a virtual host's own log; without it, the server's.
 		$host = strtolower(trim($params['host'] ?? ''));
+		// Without a log of its own, a host is picked out of the server's log
+		// by the Host field at the end of each line (the default format
+		// writes it); a domain counts its aliases and subdomains with it.
+		$hostNames = array();
+		if ($host !== '' and !isset(Q_WebServer_Log::$hosts[$host])) {
+			$h = Q_WebServer_Domains::normalize($host);
+			if ($h === '' or strlen($h) > 253 or !preg_match('/^[a-z0-9.\-:\[\]]+$/', $h)) {
+				return ['status' => 400, 'error' => 'host must be a host name such as example.com'];
+			}
+			$records = Q_WebServer_Domains::records();
+			$hostNames = isset($records[$h]) ? array_values(self::domainHosts($h, $records[$h])) : array($h);
+		}
 		if ($host !== '' and isset(Q_WebServer_Log::$hosts[$host])) {
 			$rec = Q_WebServer_Log::$hosts[$host];
 			$file = $type === 'error' ? $rec['errorPath'] : $rec['accessPath'];
@@ -2890,7 +2923,7 @@ class Q_WebServer_Panel
 		if ($status !== '' and !preg_match('/^[1-5](?:\d\d|xx)?$/', $status)) {
 			return ['status' => 400, 'error' => 'status must be a code such as 404, or a class such as 5 or 5xx'];
 		}
-		$filtering = ($filter !== '' or $method !== '' or $status !== '');
+		$filtering = ($filter !== '' or $method !== '' or $status !== '' or $hostNames);
 
 		// Read the end of the file only, never the whole of it: the last few
 		// hundred KB without a filter, up to Q.panel.logScanBytes (2 MB) with
@@ -2915,6 +2948,11 @@ class Q_WebServer_Panel
 		if ($filtering) {
 			foreach ($all as $line) {
 				if ($filter !== '' and stripos($line, $filter) === false) continue;
+				if ($hostNames) {
+					// The last field, after the response time: "host".
+					if (!preg_match('/ms "([^"]*)"$/', $line, $hm)) continue;
+					if (!in_array(Q_WebServer_Domains::normalize(stripcslashes($hm[1])), $hostNames, true)) continue;
+				}
 				if ($method !== '' or $status !== '') {
 					if (!preg_match('/"([A-Z]+)\s+\S+[^"]*"\s+(\d{3})\s/', $line, $m)) continue;
 					if ($method !== '' and $m[1] !== $method) continue;
@@ -2936,7 +2974,8 @@ class Q_WebServer_Panel
 		}
 
 		return ['lines' => array_values($result), 'file' => $file, 'exists' => true, 'size' => $size,
-			'matched' => $matched, 'scanned' => $size - $from, 'complete' => $from === 0];
+			'matched' => $matched, 'scanned' => $size - $from, 'complete' => $from === 0,
+			'hosts' => $hostNames];
 	}
 
 	// ── Cron / Scheduler API ─────────────────────────────

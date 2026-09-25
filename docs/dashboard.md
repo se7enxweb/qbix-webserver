@@ -274,7 +274,19 @@ cannot issue; `domains/provision` is the older name), `GET domains/cert/job?id=�
 The inspection and job status live in `Q_WebServer_Certificate_Inspector`, for
 the SSL view to reuse.
 
-**Planned** (not built yet): per-domain logs and traffic. Further out: password-protected
+**Traffic** — each domain card shows its requests, bytes sent, status classes
+(2xx, 3xx, 4xx, 5xx), its ten busiest paths and when it was last seen, added up
+over the domain, its aliases and its subdomains. The numbers are counted in
+memory as requests are logged, since the server started (the card shows when
+that was); they are capped at 256 host names and 200 paths per host, so a flood
+of invented names or paths cannot grow the server. **View its log lines** opens
+the Logs tab filtered to the domain.
+
+API (signed in): `GET domains/traffic?domain=…` returns `requests`, `bytes`,
+`classes`, `top` (path, count), `last`, `since`, `window` and the `names` it
+covers.
+
+**Planned** (not built yet): password-protected
 directories, hotlink protection, a PHP version and settings per domain, limits,
 quotas and disk usage, backups, web statistics history, IP address assignment,
 a read-only DNS view, cron per domain, and a file manager.
@@ -285,7 +297,7 @@ Every tab has its own address: `/Q/panel/(tab)/logs`, `/Q/panel/(tab)/system`
 and so on, `/(name)/value` pairs after `/Q/panel`. Opening one lands on that
 tab; changing tab adds a history entry, so Back and Forward move between tabs.
 The Logs tab keeps its filters in the address too, for example
-`/Q/panel/(tab)/logs/(type)/access/(status)/5xx/(filter)/checkout`, and its
+`/Q/panel/(tab)/logs/(type)/access/(status)/5xx/(host)/example.com`, and its
 **Copy link** button copies exactly that.
 
 ### Logs tab
@@ -297,6 +309,11 @@ agent on hover) and as lines for the error log.
 - **Filters**: free text, HTTP method, and status: an exact code (`404`) or
   a class (`5` or `5xx`). A bad method or status is refused with the reason,
   not ignored.
+- **Host**: the lines for one host name. A host with a log of its own shows
+  that log; otherwise its lines are picked out of the server's log by the
+  Host field the default format writes at the end of each line. A domain
+  matches its aliases and subdomains too. Lines written before the Host was
+  logged (the older `qbix` format) have no host and never match.
 - **How far back**: without a filter the last 50–500 lines are read; with one,
   the last 2 MB of the file are searched (`Q.panel.logScanBytes`) and the
   newest matches shown, with how many matched and how much was searched. The
@@ -304,7 +321,7 @@ agent on hover) and as lines for the error log.
 - **Tail** refreshes every two seconds while the tab is open; **Download**
   saves the lines shown.
 
-The log API (`/Q/api/logs?type=access|error&lines=&filter=&method=&status=`)
+The log API (`/Q/api/logs?type=access|error&lines=&filter=&method=&status=&host=`)
 needs a signed-in panel session like every other panel API.
 
 ### The other tabs
