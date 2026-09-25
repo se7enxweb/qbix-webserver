@@ -38,8 +38,8 @@ check('a throwing callback is contained, and the next one runs', $ran === 1);
 
 // A real loop: one timer throws every tick, another counts; the loop must
 // keep going until the counter stops it.
-// (Q_Evented_IoPoll is not exercised: it cannot be loaded -- its tick() is
-// protected where the base class declares it public.)
+// (Every backend, IoPoll and Revolt included, is exercised the same way in
+// tests/unit-evented-backends.php.)
 foreach (array('Q_Evented_StreamSelect') as $cls) {
 	if (!class_exists($cls)) continue;
 	$loop = new $cls();

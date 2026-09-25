@@ -153,18 +153,20 @@ class Q_Evented_StreamSelect extends Q_Evented_Driver
 		// 2. Timers
 		$now = microtime(true);
 		$nextTimer = null;
+		// Iterating a copy: a callback may cancel this or any other timer,
+		// and a cancelled timer must neither fire later in this pass nor be
+		// brought back as a half-entry (fireAt only) by rescheduling it.
 		foreach ($this->timers as $id => $t) {
-			if (!empty($this->disabled[$id])) continue;
+			if (!isset($this->timers[$id]) || !empty($this->disabled[$id])) continue;
 			if ($now >= $t['fireAt']) {
+				if ($t['interval'] <= 0) unset($this->timers[$id]);
 				self::guard($t['callback'], 'timer');
-				if ($t['interval'] > 0) {
+				if ($t['interval'] > 0 && isset($this->timers[$id])) {
 					$this->timers[$id]['fireAt'] = $now + $t['interval'];
 					// Its next run counts toward how long this tick may wait;
 					// left out, a repeating timer waited for the next I/O or
 					// the next other timer, however far off that was.
 					if ($nextTimer === null || $t['interval'] < $nextTimer) $nextTimer = $t['interval'];
-				} else {
-					unset($this->timers[$id]);
 				}
 			} else {
 				$rem = $t['fireAt'] - $now;

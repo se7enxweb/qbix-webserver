@@ -19,14 +19,14 @@ class Q_Evented_Revolt extends Q_Evented_Driver
 	function onReadable($stream, callable $cb)
 	{
 		return EventLoop::onReadable($stream, function ($id, $s) use ($cb) {
-			$cb($s);
+			self::guard(function () use ($cb, $s) { $cb($s); }, 'stream');
 		});
 	}
 
 	function onWritable($stream, callable $cb)
 	{
 		return EventLoop::onWritable($stream, function ($id, $s) use ($cb) {
-			$cb($s);
+			self::guard(function () use ($cb, $s) { $cb($s); }, 'stream');
 		});
 	}
 
@@ -54,7 +54,7 @@ class Q_Evented_Revolt extends Q_Evented_Driver
 	function onSignal($signal, callable $cb)
 	{
 		return EventLoop::onSignal($signal, function ($id, $s) use ($cb) {
-			$cb($s);
+			self::guard(function () use ($cb, $s) { $cb($s); }, 'stream');
 		});
 	}
 
@@ -69,15 +69,25 @@ class Q_Evented_Revolt extends Q_Evented_Driver
 		$this->running = false;
 	}
 
+	/**
+	 * Revolt has no single-pass call, so run it until a timer set for the
+	 * timeout stops it. Plain EventLoop::run() returns only when no watcher
+	 * is left, which with any listening socket is never.
+	 */
 	function tick($timeout = 0)
 	{
-		EventLoop::delay($timeout ?: 0.0, function () {});
-		EventLoop::run();
+		$driver = EventLoop::getDriver();
+		$id = EventLoop::delay($timeout ? (float)$timeout : 0.0, function () use ($driver) { $driver->stop(); });
+		EventLoop::unreference($id);
+		$driver->run();
+		EventLoop::cancel($id);
 	}
 
+	/** Ends run() (and a tick) after the current callbacks. */
 	function stop()
 	{
 		$this->running = false;
+		EventLoop::getDriver()->stop();
 	}
 
 	function running()
