@@ -1025,7 +1025,9 @@ class Q_WebServer
 				return self::http2Error(403, 'Forbidden');
 			}
 
-			if (is_file($fsPath)) {
+			// A file Q.web.static.paths does not list goes to the application
+			// below, like a path that names no file at all.
+			if (is_file($fsPath) and self::servedAsFile($decoded)) {
 				$ext = strtolower(pathinfo($fsPath, PATHINFO_EXTENSION));
 				if ($ext !== 'php' and !in_array($ext, self::$allowedExtensions)) {
 					return self::http2Error(403, 'Forbidden');
@@ -1169,6 +1171,125 @@ class Q_WebServer
 	}
 
 	/**
+	 * Whether a script may run because it was asked for by name.
+	 *
+	 * Q.webserver.scripts lists those that may, relative to the document root
+	 * ("/index.php"). Unset, every script inside the root may -- as before the
+	 * key existed. Set, any other .php file is treated as though it were not
+	 * there, and the request goes to the front controller: what an .htaccess
+	 * that serves the assets and sends everything else to index.php does under
+	 * Apache. Without it, an application whose entry points are a handful of
+	 * scripts also exposes every library, installer and command-line tool it
+	 * ships, each of which runs when its path is requested.
+	 *
+	 * @method scriptRunnable
+	 * @static
+	 * @param {string} $fsPath
+	 * @return {boolean}
+	 */
+	static function scriptRunnable($fsPath)
+	{
+		$list = Q_Config::get('Q', 'webserver', 'scripts', null);
+		if (!is_array($list)) return true;
+
+		// The path may come from realpath(), and the root may be a link:
+		// compared with the root as given and as resolved.
+		$file = str_replace('\\', '/', (string) $fsPath);
+		$relative = null;
+		foreach (array(self::$rootDir, realpath(self::$rootDir)) as $root) {
+			if (!is_string($root) or $root === '') continue;
+			$root = rtrim(str_replace('\\', '/', $root), '/');
+			if (strncmp($file, $root . '/', strlen($root) + 1) === 0) {
+				$relative = substr($file, strlen($root));
+				break;
+			}
+		}
+		if ($relative === null) return false;
+		foreach ($list as $script) {
+			if ('/' . ltrim(str_replace('\\', '/', (string) $script), '/') === $relative) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether a file may be sent as it is.
+	 *
+	 * Q.web.static.paths lists patterns on the request's path
+	 * ("^/design/[^/]+/stylesheets/"). Unset, every file with a served
+	 * extension may -- as before the key existed. Set, a file no pattern
+	 * matches is treated as though it were not there and the request goes to
+	 * the front controller: the "- [L]" rules of an .htaccess followed by
+	 * ".* index.php". An application that keeps protected uploads in the
+	 * document root and hands them out through a script that checks who is
+	 * asking is otherwise bypassed by anyone who knows the file's path.
+	 *
+	 * Judged on the path as requested -- as an .htaccess rule is -- not on
+	 * the file it resolves to: an asset directory that is a symbolic link
+	 * resolves outside the root, and is still an asset directory. Whether
+	 * such a file may be read at all is insideRoot()'s question. Dot segments
+	 * are resolved first, so /design/x/stylesheets/../../../var/private.pdf
+	 * is judged as /var/private.pdf and not as a stylesheet.
+	 *
+	 * @method servedAsFile
+	 * @static
+	 * @param {string} $path The decoded request path
+	 * @return {boolean}
+	 */
+	static function servedAsFile($path)
+	{
+		$patterns = Q_Config::get('Q', 'web', 'static', 'paths', null);
+		if (!is_array($patterns)) return true;
+
+		$segments = array();
+		foreach (explode('/', str_replace('\\', '/', (string) $path)) as $segment) {
+			if ($segment === '' or $segment === '.') continue;
+			if ($segment === '..') {
+				if (!$segments) return false;
+				array_pop($segments);
+				continue;
+			}
+			$segments[] = $segment;
+		}
+		$relative = '/' . implode('/', $segments);
+		foreach ($patterns as $pattern) {
+			if (@preg_match(self::ensureRegex((string) $pattern), $relative)) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * The script a URL that names no runnable file goes to.
+	 *
+	 * Q.webserver.frontControllers maps patterns on the path to scripts,
+	 * checked in order ({"^/api/": "index_rest.php"}); the first match whose
+	 * script exists inside the root wins. Otherwise index.php, as always.
+	 *
+	 * These are decided here, in the server, because a pooled worker runs the
+	 * script it is handed: an .htaccess rule that sends a URL to a script
+	 * other than index.php is never consulted on that path.
+	 *
+	 * @method frontController
+	 * @static
+	 * @param {string} $path
+	 * @return {string|null}
+	 */
+	static function frontController($path)
+	{
+		$routes = Q_Config::get('Q', 'webserver', 'frontControllers', array());
+		if (is_array($routes)) {
+			foreach ($routes as $pattern => $script) {
+				if (!@preg_match(self::ensureRegex((string) $pattern), $path)) continue;
+				$candidate = self::$rootDir . ltrim(str_replace(array('/', '\\'), DS, (string) $script), DS);
+				if (is_file($candidate) and self::insideRoot($candidate)) return $candidate;
+			}
+		}
+		$front = self::$rootDir . 'index.php';
+		return is_file($front) ? $front : null;
+	}
+
+	/**
 	 * The script that should answer a path, or null.
 	 *
 	 * Kept separate so the HTTP/2 path and the HTTP/1.1 path agree about what
@@ -1188,23 +1309,23 @@ class Q_WebServer
 		// server user can read was otherwise run: that turns being able to
 		// create one file into being able to run code from outside the site
 		// altogether, which is a long way past serving a file one should not.
-		if (is_file($fsPath) and strtolower(pathinfo($fsPath, PATHINFO_EXTENSION)) === 'php') {
+		if (is_file($fsPath) and strtolower(pathinfo($fsPath, PATHINFO_EXTENSION)) === 'php'
+			and self::scriptRunnable($fsPath)) {
 			return self::insideRoot($fsPath) ? $fsPath : null;
 		}
 
-		$root = rtrim(self::$rootDir, '/\\');
 		if (is_dir($fsPath)) {
 			foreach (array('index.php', 'index.html') as $index) {
 				$candidate = rtrim($fsPath, '/\\') . DIRECTORY_SEPARATOR . $index;
-				if (is_file($candidate)) {
+				if (is_file($candidate) and ($index !== 'index.php' or self::scriptRunnable($candidate))) {
 					return self::insideRoot($candidate) ? $candidate : null;
 				}
 			}
 		}
 
 		// The front controller, which is how a framework URL is served.
-		$front = $root . DIRECTORY_SEPARATOR . 'index.php';
-		if (!is_file($front)) return null;
+		$front = self::frontController($path);
+		if ($front === null) return null;
 		return self::insideRoot($front) ? $front : null;
 	}
 
@@ -2401,7 +2522,8 @@ class Q_WebServer
 		// contract (Q.Utils.sendToPHP posts to action.php/<Module>/<action>).
 		if (!$fsPath || !is_file($fsPath)) {
 			$_pi = self::splitPathInfo($path);
-			if ($_pi !== null and !self::insideRoot($_pi['scriptPath'])) {
+			if ($_pi !== null and (!self::insideRoot($_pi['scriptPath'])
+				or !self::scriptRunnable($_pi['scriptPath']))) {
 				$_pi = null;
 			}
 			if ($_pi !== null) {
@@ -2423,7 +2545,7 @@ class Q_WebServer
 		$ext = strtolower(pathinfo($fsPath ? $fsPath : $path, PATHINFO_EXTENSION));
 		if ($fsPath && is_file($fsPath)) {
 
-			if ($ext === 'php') {
+			if ($ext === 'php' && self::scriptRunnable($fsPath)) {
 				// A link named *.php can point anywhere the server user can
 				// read, and running it turns the ability to create one file
 				// into the ability to run code from outside the site. The
@@ -2444,8 +2566,9 @@ class Q_WebServer
 				return $response;
 			}
 
-			if (in_array($ext, self::$allowedExtensions)
+			if ($ext !== 'php' && in_array($ext, self::$allowedExtensions)
 				&& ($method === 'GET' || $method === 'HEAD')
+				&& self::servedAsFile($path)
 			) {
 				// Image resize/convert: ?w=300 or ?w=300&h=200
 				if (in_array($ext, array('png','jpg','jpeg','gif','webp','bmp','avif'))
@@ -2460,13 +2583,18 @@ class Q_WebServer
 
 		// Image format conversion: /photo.webp when only /photo.png exists
 		$imgExts = array('webp', 'avif', 'jpg', 'jpeg', 'png', 'gif');
-		if (in_array($ext, $imgExts) && ($method === 'GET' || $method === 'HEAD')) {
+		if (in_array($ext, $imgExts) && ($method === 'GET' || $method === 'HEAD')
+			&& self::servedAsFile($path)) {
 			$imgResponse = Q_WebServer_Image::handle(null, $path, $parsed);
 			if ($imgResponse) return $imgResponse;
 		}
 
-		// Clean URL → index.php
-		if (is_file(self::$rootDir . 'index.php')) {
+		// Clean URL → the front controller (index.php unless configured)
+		$front = self::frontController($path);
+		if ($front !== null) {
+			if ($front !== self::$rootDir . 'index.php') {
+				$parsed['_scriptPath'] = $front;
+			}
 			$response = self::dispatchToQ($parsed);
 			$response = self::processPhpResponse($response, $parsed['headers']);
 			$response = Q_WebServer_Cache::put($parsed, $response);
@@ -3105,7 +3233,7 @@ class Q_WebServer
 		// since Q.Utils.sendToPHP posts to action.php/<Module>/<action>.
 		if (!$fsPath || !is_file($fsPath)) {
 			$_pi = self::splitPathInfo($path);
-			if ($_pi !== null) {
+			if ($_pi !== null and self::scriptRunnable($_pi['scriptPath'])) {
 				$parsed['_pathInfo'] = $_pi['pathInfo'];
 				return self::handlePhp($client, $parsed, $_pi['scriptPath']);
 			}
@@ -3120,13 +3248,15 @@ class Q_WebServer
 		$ext = strtolower(pathinfo($fsPath ? $fsPath : $path, PATHINFO_EXTENSION));
 		if ($fsPath && is_file($fsPath)) {
 
-			// PHP scripts → worker pool or in-process
-			if ($ext === 'php') {
+			// PHP scripts → worker pool or in-process; one not listed in
+			// Q.webserver.scripts goes to the front controller below.
+			if ($ext === 'php' && self::scriptRunnable($fsPath)) {
 				return self::handlePhp($client, $parsed, $fsPath);
 			}
 
-			// Static file
-			if ($method === 'GET' || $method === 'HEAD') {
+			// Static file, if Q.web.static.paths lets it be one
+			if ($ext !== 'php' && ($method === 'GET' || $method === 'HEAD')
+				&& self::servedAsFile($path)) {
 				// Image resize/convert: ?w=300 or ?w=300&h=200
 				if (in_array($ext, array('png','jpg','jpeg','gif','webp','bmp','avif'))
 					&& !empty($parsed['query'])
@@ -3144,7 +3274,8 @@ class Q_WebServer
 
 		// Image format conversion: /photo.webp when only /photo.png exists
 		$imgExts = array('webp', 'avif', 'jpg', 'jpeg', 'png', 'gif');
-		if (in_array($ext, $imgExts) && ($method === 'GET' || $method === 'HEAD')) {
+		if (in_array($ext, $imgExts) && ($method === 'GET' || $method === 'HEAD')
+			&& self::servedAsFile($path)) {
 			$imgResponse = Q_WebServer_Image::handle(null, $path, $parsed);
 			if ($imgResponse) {
 				Q_WebServer_Headers::processResponse($client, $imgResponse, $parsed['headers']);
@@ -3162,9 +3293,9 @@ class Q_WebServer
 			return self::handleRoute($client, $parsed, $uri);
 		}
 
-		// 7. Clean URL → route through index.php (if exists)
-		$indexPhp = self::$rootDir . 'index.php';
-		if (is_file($indexPhp)) {
+		// 7. Clean URL → the front controller (index.php unless configured)
+		$indexPhp = self::frontController($path);
+		if ($indexPhp !== null) {
 			return self::handlePhp($client, $parsed, $indexPhp);
 		}
 

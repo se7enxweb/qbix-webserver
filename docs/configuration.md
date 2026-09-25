@@ -53,6 +53,9 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `webserver.hotReload` | `false` | Watch `classes/`, `handlers/`, `config/` for changes. Auto-restarts on class/config changes. |
 | `webserver.cgi.patterns` | [] | Regex patterns for scripts that use php-cgi (legacy compatibility) |
 | `webserver.cgi.binary` | auto | Path to php-cgi binary (auto-detected if not set) |
+| `webserver.scripts` | (all) | Scripts that run when asked for by name, relative to the root (`["/index.php"]`). Any other `.php` goes to the front controller. See [Only the entry points run](#only-the-entry-points-run) |
+| `web.static.paths` | (all) | Patterns on a file's path below the root; only a matching file is sent as it is, any other goes to the front controller. See [Only the entry points run](#only-the-entry-points-run) |
+| `webserver.frontControllers` | `{}` | Path patterns to scripts, checked in order (`{"^/api/": "index_rest.php"}`); anything else goes to `index.php` |
 
 ### Virtual hosts
 
@@ -225,6 +228,51 @@ The handler receives `$params['task']` (the task name) and `$params['scheduled']
 ```
 
 On restart, tasks scheduled for the current minute are skipped to avoid double-firing. Interval tasks wait one full interval before their first run.
+
+### Only the entry points run
+
+By default every `.php` file inside the document root runs when its path is
+requested. An application that keeps its entry points to a few scripts --
+and ships libraries, installers and command-line tools beside them -- says
+which ones may:
+
+```json
+{
+    "Q": {
+        "web": {
+            "static": {
+                "paths": ["^/(design/[^/]+/(stylesheets|images|javascript|fonts)/|var/([^/]+/)?storage/images/)"]
+            }
+        },
+        "webserver": {
+            "scripts": ["/index.php", "/index_rest.php"],
+            "frontControllers": {
+                "^/api/": "index_rest.php",
+                "^/([^/]+/)?content/treemenu": "index_treemenu.php"
+            }
+        }
+    }
+}
+```
+
+A request for any other script, `/lib/tool.php` or `/lib/tool.php/extra`
+alike, a directory's own `index.php` included, is treated as though the file
+were not there: it goes to the front controller, as it would behind an
+`.htaccess` that serves the assets and sends everything else to `index.php`.
+
+`web.static.paths` does the same for files: with it set, only a file whose
+path matches one of the patterns is sent as it is -- the `- [L]` rules of
+such an `.htaccess`. Any other goes to the front controller, so an upload the
+application hands out through a script that checks who is asking cannot be
+fetched past it by its path. The path is judged after its dot segments are
+resolved.
+
+`frontControllers` is how a rule such as `RewriteRule ^api/ index_rest.php`
+is said to the server. A pooled worker runs the script the server hands it
+and does not read `.htaccess`, so a rewrite to a script other than
+`index.php` has to be decided here. The first pattern that matches, and
+whose script exists inside the root, wins. Both keys apply to HTTP/1.1 and
+HTTP/2, in either worker mode.
 
 ### CGI carveout mode — legacy PHP compatibility
 
