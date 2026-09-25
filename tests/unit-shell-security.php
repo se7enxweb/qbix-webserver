@@ -70,6 +70,13 @@ check('a lookalike host is refused', origin('https://example.test.evil.test:8080
 check('no Origin is refused', origin('', 'example.test'), false);
 check('Origin null is refused', origin('null', 'example.test'), false);
 check('an origin with a path is refused', origin('http://example.test/x', 'example.test'), false);
+// The running server marks TLS with '_https', not 'https' (handleRequest()).
+$tls = function ($origin, $host) {
+	return Q_WebServer_Shell_Api::originAllowed(array('headers' => array('origin' => $origin, 'host' => $host), '_https' => true));
+};
+check('same origin over TLS as the server marks it', $tls('https://example.test:8080', 'example.test:8080'), true);
+check('plain http page refused over TLS as the server marks it', $tls('http://example.test:8080', 'example.test:8080'), false);
+check('the session cookie is Secure over TLS HTTP/1.1', strpos(Q_WebServer_Panel_Auth::sessionCookie('t', array('_https' => true, 'httpVersion' => '1.1')), '; Secure') !== false, true);
 Q_Config::set('Q', 'shell', 'allowedOrigins', array('https://proxy.test'));
 check('a listed origin is allowed', origin('https://proxy.test', 'backend:8080'), true);
 check('only as listed (port)', origin('https://proxy.test:444', 'backend:8080'), false);

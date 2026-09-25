@@ -80,8 +80,11 @@
       this.ws.onmessage = function (e) { var m; try { m = JSON.parse(e.data); } catch (x) { return; } self.dispatch(m); };
       this.ws.onerror = function () { if (!opened && !failed) { failed = true; self.fallback(); } };
       this.ws.onclose = function () {
-        self.ready = false;
+        // A refused handshake fires error and then close: by then fallback()
+        // has switched to HTTP and is ready, and must stay so -- clearing
+        // ready here queued every later command for good.
         if (!opened) { if (!failed) { failed = true; self.fallback(); } return; }
+        self.ready = false;
         if (self.conn === 'signed-out') return;
         self.setConn('reconnecting');
         // Reconnect, and say hello again for every pane.

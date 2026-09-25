@@ -179,7 +179,9 @@ class Q_WebServer_Shell_Api
 			$e = parse_url(strtolower(trim((string) $extra)));
 			if (is_array($e) && !empty($e['scheme']) && !empty($e['host']) && $norm($e['scheme'], $e['host'], $e['port'] ?? null) === $want) return true;
 		}
-		$scheme = !empty($parsed['https']) ? 'https' : 'http';
+		// The server marks a TLS request with '_https' (see handleRequest());
+		// 'https' is accepted too, for callers that build the request themselves.
+		$scheme = (!empty($parsed['_https']) || !empty($parsed['https'])) ? 'https' : 'http';
 		if (!preg_match('/^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::(\d+))?$/', $host, $m)) return false;
 		return $norm($scheme, $m[1], $m[2] ?? null) === $want;
 	}

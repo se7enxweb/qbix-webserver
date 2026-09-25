@@ -304,7 +304,7 @@ class Q_WebServer_Panel_Auth
 	 */
 	static function sessionCookie($token, $parsed)
 	{
-		$secure = !empty($parsed['https']) || ($parsed['httpVersion'] ?? '') === '2';
+		$secure = !empty($parsed['_https']) || !empty($parsed['https']) || ($parsed['httpVersion'] ?? '') === '2';
 		$v = 'Q_panel_token=' . ($token === null ? '' : rawurlencode($token)) . '; Path=/; SameSite=Lax'
 			. ($token === null ? '; Max-Age=0' : '; Max-Age=' . self::SESSION_SECONDS);
 		return $v . ($secure ? '; Secure' : '');

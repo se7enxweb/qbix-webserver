@@ -2141,7 +2141,7 @@ class Q_WebServer
 		// HTTP/2, which is TLS in practice.
 		if (strncmp($path, '/Q/', 3) === 0) {
 			Q_WebServer_Brand::noteRequest($parsed,
-				!empty($parsed['https']) || ($parsed['httpVersion'] ?? '') === '2');
+				!empty($parsed['_https']) || !empty($parsed['https']) || ($parsed['httpVersion'] ?? '') === '2');
 			$brandResponse = Q_WebServer_Brand::route($path);
 			if ($brandResponse !== null) return $brandResponse;
 		}
