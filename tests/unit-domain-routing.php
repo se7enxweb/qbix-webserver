@@ -232,6 +232,49 @@ if (function_exists('pcntl_fork')) {
 	list($st) = rawGet($port, 'a.test', '/Q/health');
 	ck('/Q/ paths are never rerouted', $st === 200, true);
 	rh_stop($GLOBALS['rh']['servers']['route']);
+
+	// The same routing over HTTP/2 with TLS, the way a browser asks: the host
+	// name travels in SNI and :authority, not in a Host header, and the
+	// response cache is on, so a cached page of one domain must never be
+	// served for another.
+	$h2ok = function_exists('curl_init') && defined('CURL_HTTP_VERSION_2TLS')
+		&& (curl_version()['features'] & CURL_VERSION_HTTP2);
+	if ($h2ok) {
+		$tls = rh_free_port();
+		$GLOBALS['rh_extra_args'] = array('--https-port=' . $tls);
+		$port2 = rh_start('route-h2', array('Q' => array(
+			'panel' => array('aclDir' => $acl, 'sessionsDir' => $sessions),
+			'web' => array('http2' => array('enabled' => true),
+				'cache' => array('enabled' => true, 'dir' => $rbase . DS . 'h2cache')),
+		)), 2);
+		$GLOBALS['rh_extra_args'] = array();
+		$h2 = function ($host, $path) use ($tls) {
+			$ch = curl_init("https://$host:$tls$path");
+			curl_setopt_array($ch, array(
+				CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_2TLS,
+				CURLOPT_SSL_VERIFYPEER => false, CURLOPT_SSL_VERIFYHOST => 0, CURLOPT_TIMEOUT => 15,
+				CURLOPT_RESOLVE => array("$host:$tls:127.0.0.1"),
+			));
+			$body = (string) curl_exec($ch);
+			$status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+			$version = curl_getinfo($ch, CURLINFO_HTTP_VERSION);
+			curl_close($ch);
+			return array($status, trim($body), $version === CURL_HTTP_VERSION_2_0);
+		};
+		ck('HTTP/2: a.test is answered over HTTP/2 from its root', $h2('a.test', '/'), array(200, 'ROOT-A', true));
+		ck('HTTP/2: b.test from its own root', $h2('b.test', '/'), array(200, 'ROOT-B', true));
+		$seen = array();
+		for ($i = 0; $i < 4; ++$i) { $seen[] = $h2('a.test', '/')[1]; $seen[] = $h2('b.test', '/')[1]; }
+		ck('HTTP/2: repeated with the cache on, never crossed', array_unique($seen), array('ROOT-A', 'ROOT-B'));
+		ck('HTTP/2: an alias from its domain\'s root', array_slice($h2('www.a.test', '/'), 0, 2), array(200, 'ROOT-A'));
+		ck('HTTP/2: a subdomain from its own root', array_slice($h2('blog.a.test', '/'), 0, 2), array(200, 'ROOT-BLOG'));
+		ck('HTTP/2: static files per domain', array($h2('a.test', '/hello.txt')[1], $h2('b.test', '/hello.txt')[1]), array('static-a', 'static-b'));
+		ck('HTTP/2: an unknown host gets the default root', array_slice($h2('nobody.test', '/'), 0, 2), array(200, 'DEFAULT'));
+		ck('HTTP/2: /Q/ paths are never rerouted', $h2('a.test', '/Q/health')[0], 200);
+		rh_stop($GLOBALS['rh']['servers']['route-h2']);
+	} else {
+		printf("  skip  HTTP/2 routing: this PHP's curl has no HTTP/2\n");
+	}
 }
 
 printf("%s - %d case(s)%s\n", $fail ? '  FAIL' : '  PASS', $pass + $fail, $fail ? " ($fail failed)" : '');
