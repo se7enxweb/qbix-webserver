@@ -14,6 +14,7 @@
  *   - values are substituted once: a value containing {{name}} stays literal;
  *   - lookup order: the configuration directory's designs/ before the engine's,
  *     the active design before "default", one file at a time;
+ *   - {{@view/file}} includes another view's file (common/chrome.css), overridable;
  *   - a view or design name cannot leave the designs directory;
  *   - a missing view renders null, not an error.
  *
@@ -57,6 +58,12 @@ check('the override is what renders', strpos($D::render('error', array('code' =>
 Q_Config::set('Q', 'webserver', 'design', 'dark');
 file_put_contents("$conf/designs/dark/error/page.html", 'DARK {{code}} {{@style.css}}');
 check('the active design wins over default, file by file', $D::render('error', array('code' => '404')), 'DARK 404 body{color:red}');
+// {{@view/file}}: another view's file -- the shared chrome -- overridable the same way.
+file_put_contents("$conf/designs/dark/error/page.html", '{{@common/chrome.css}}|{{@style.css}}|{{@../error/page.html}}');
+check('{{@view/file}} includes another view\'s file: the shared chrome', strpos($D::render('error', array()), '.qnav a[aria-current=page]') !== false, true);
+mkdir("$conf/designs/default/common", 0755, true);
+file_put_contents("$conf/designs/default/common/chrome.css", 'CHROME');
+check('...overridable file by file; an include that is a path stays literal', $D::render('error', array()), 'CHROME|body{color:red}|{{@../error/page.html}}');
 Q_Config::set('Q', 'webserver', 'design', '../../etc');
 check('a design name that is a path falls back to default', $D::active(), 'default');
 check('a view name that is a path is refused', $D::path('../../../etc', 'passwd'), null);

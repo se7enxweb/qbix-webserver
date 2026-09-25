@@ -3,31 +3,42 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
 <title>Velo<city> & {{brandHead}} Control Panel</title>
 <link rel="x" href="/a?b=1&amp;c"> {{brand}} \ $y
-<style>
+<style>/* The chrome every server view shares -- palette, header, brand, status
+   badge and view navigation -- included ahead of the view's own style.css,
+   which changes only what differs. */
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0b14;--sfc:rgba(22,24,40,.7);--sfc-solid:#161828;--bdr:rgba(255,255,255,.06);
---txt:#e1e4ed;--dim:#6b7089;--ac:#7c5cfc;--ac2:#a78bfa;--grn:#4ade80;--yel:#fbbf24;
---red:#f87171;--cyn:#22d3ee;--glow:rgba(124,92,252,.08)}
-@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--sfc:rgba(255,255,255,.85);--sfc-solid:#fff;--bdr:rgba(0,0,0,.08);
---txt:#1a1a2e;--dim:#6b7089;--glow:rgba(124,92,252,.05)}}
+:root{--bg:#0a0b14;--sfc:rgba(22,24,40,.7);--sfc2:#161828;--sfc-solid:#161828;--bdr:rgba(255,255,255,.06);--txt:#e1e4ed;--dim:#80859e;
+--ac:#7c5cfc;--ac2:#a78bfa;--grn:#4ade80;--yel:#fbbf24;--red:#f87171;--cyn:#22d3ee;--pur:#a78bfa;--glow:rgba(124,92,252,.08);--row:rgba(255,255,255,.03)}
+/* --dim is the quiet text colour: 4.5:1 or better on the page and the cards, in both schemes. */
+@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--sfc:rgba(255,255,255,.85);--sfc2:#fff;--sfc-solid:#fff;--bdr:rgba(0,0,0,.08);--txt:#1a1a2e;--dim:#5d6178;--glow:rgba(124,92,252,.05);--row:rgba(0,0,0,.025)}}
 body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
-  background:var(--bg);color:var(--txt);font-size:14px;min-height:100vh;
-  background-image:
-    radial-gradient(ellipse 80% 60% at 20% 0%, rgba(124,92,252,.12) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 80% 100%, rgba(34,211,238,.06) 0%, transparent 50%);
-  background-attachment:fixed}
-
-/* ── Header ── */
-.top{padding:16px 20px;display:flex;justify-content:space-between;align-items:center;
-  background:rgba(10,11,20,.8);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
-  border-bottom:1px solid var(--bdr);position:sticky;top:0;z-index:50}
+background:var(--bg);color:var(--txt);font-size:13px;min-height:100vh;
+background-image:radial-gradient(ellipse 80% 60% at 20% 0%,rgba(124,92,252,.12) 0%,transparent 60%),
+radial-gradient(ellipse 60% 50% at 80% 100%,rgba(34,211,238,.06) 0%,transparent 50%);background-attachment:fixed}
+/* Header and section tabs stick together, whatever height the header wraps to. */
+.chrome{position:sticky;top:0;z-index:50}
+.top{padding:16px 20px;display:flex;flex-wrap:wrap;gap:8px 16px;justify-content:space-between;align-items:center;
+background:rgba(10,11,20,.8);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+border-bottom:1px solid var(--bdr)}
 .top h1{font-size:17px;color:#fff;font-weight:700;letter-spacing:-.3px}
 .top h1 img{vertical-align:middle}
 .status{display:flex;gap:6px;align-items:center;font-size:12px;font-weight:500;
-  padding:4px 12px;border-radius:20px;background:rgba(34,197,94,.1);color:var(--grn)}
-.status .pulse{width:6px;height:6px;border-radius:50%;background:var(--grn);
-  animation:pulse 2s ease-in-out infinite}
+padding:4px 12px;border-radius:20px;background:rgba(34,197,94,.1);color:var(--grn)}
+.status .pulse{width:6px;height:6px;border-radius:50%;background:var(--grn);animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.qnav{display:flex;flex-wrap:wrap;gap:4px;font-size:12px;min-width:0}
+.qnav a{color:var(--dim);text-decoration:none;padding:2px 9px;border:1px solid rgba(255,255,255,.08);border-radius:10px;white-space:nowrap}
+.qnav a:hover,.qnav a:focus-visible{color:#fff;border-color:var(--ac2)}
+.qnav a[aria-current=page]{color:var(--ac2);background:var(--glow)}
+.content{padding:20px;max-width:1200px;margin:0 auto}
+@media(max-width:768px){.top{padding:14px 16px}.top h1{font-size:15px}.top .qnav{order:3;flex:1 0 100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+.content{padding:16px}}
+@supports(padding:env(safe-area-inset-top)){.top{padding-top:calc(16px + env(safe-area-inset-top))}}
+/* The control panel's own rules; the shared chrome is common/chrome.css. */
+body{font-size:14px}
+
+/* ── Header ── */
+.top{position:sticky;top:0;z-index:50}
 
 /* ── Tabs ── */
 .tabs{display:flex;gap:0;padding:0 20px;background:rgba(22,24,40,.6);
@@ -162,12 +173,6 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   .top{padding-top:calc(16px + env(safe-area-inset-top))}
   body{padding-bottom:env(safe-area-inset-bottom)}
 }
-.top{flex-wrap:wrap;gap:8px 16px}
-.qnav{display:flex;flex-wrap:wrap;gap:4px;font-size:12px;min-width:0}
-.qnav a{color:var(--dim);text-decoration:none;padding:2px 9px;border:1px solid rgba(255,255,255,.08);border-radius:10px;white-space:nowrap}
-.qnav a:hover,.qnav a:focus-visible{color:#fff;border-color:var(--ac2)}
-.qnav a[aria-current=page]{color:var(--ac2);background:var(--glow)}
-@media(max-width:768px){.top .qnav{order:3;flex:1 0 100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}}
 /* The page opens on the view the server chose from the session (body
    data-auth: panel, mustchange, signin; unknown only for a design or client
    that did not say). The panel's tabs and sections paint only for a signed-in
@@ -639,7 +644,7 @@ function showAuthScreen(isSetup, info) {
   screen.style.maxWidth = '380px';
   screen.style.margin = '40px auto';
   screen.innerHTML = '<div class="card">'
-    + '<h3 style="margin-bottom:12px">' + (isSetup ? 'Set Panel Password' : 'Panel Login') + '</h3>'
+    + '<h2 style="font-size:14px;font-weight:700;color:var(--txt);margin-bottom:12px">' + (isSetup ? 'Set Panel Password' : 'Panel Login') + '</h2>'
     + (isSetup ? '<p style="font-size:13px;color:var(--dim);margin-bottom:16px">You\'re the first person to access this panel. Set a password to secure it: at least 16 characters, with upper and lower case, a digit and a symbol.</p>' : '')
     + (!isSetup && info && info.hint ? '<p id="auth-hint" style="font-size:13px;color:var(--dim);margin-bottom:16px"></p>' : '')
     + '<div class="form-row"><label>Password</label><input type="password" id="auth-pw" placeholder="' + (isSetup ? 'Choose a password (16+ characters)' : 'Enter password') + '"></div>'

@@ -747,20 +747,18 @@ class Q_WebServer_Http2_Connection
 			if ($lk === 'content-type') $contentType = (string) $v;
 		}
 
+		// The one encoder the HTTP/1.1 path uses too (brotli or gzip).
+		if (!class_exists('Q_WebServer_Headers')) require_once dirname(__DIR__) . '/Headers.php';
 		if (!$alreadyEncoded and $body !== ''
-			and strpos(strtolower($accept), 'gzip') !== false
-			and function_exists('gzencode')
 			and self::compressible($contentType, strlen($body))
+			and ($encoded = Q_WebServer_Headers::encode($body, $accept)) !== null
 		) {
-			$compressed = @gzencode($body, 6);
-			if ($compressed !== false and strlen($compressed) < strlen($body)) {
-				$body = $compressed;
-				$headers['content-encoding'] = 'gzip';
-				// Vary matters even here: a cache in front must not serve the
-				// compressed copy to a client that did not ask for it.
-				$headers['vary'] = isset($headers['vary'])
-					? $headers['vary'] . ', Accept-Encoding' : 'Accept-Encoding';
-			}
+			$body = $encoded[1];
+			$headers['content-encoding'] = $encoded[0];
+			// Vary matters even here: a cache in front must not serve the
+			// compressed copy to a client that did not ask for it.
+			$headers['vary'] = isset($headers['vary'])
+				? $headers['vary'] . ', Accept-Encoding' : 'Accept-Encoding';
 		}
 
 		$list = array(array(':status', (string) $status));

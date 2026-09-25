@@ -23,7 +23,24 @@ includes:
 designs/<design>/<view>/page.html     the page, with {{placeholders}}
 designs/<design>/<view>/style.css     included by {{@style.css}}
 designs/<design>/<view>/script.js     included by {{@script.js}}
+designs/<design>/common/chrome.css    included by {{@common/chrome.css}}
 ```
+
+`common/chrome.css` is the chrome the dashboard, control panel, metrics and PHP
+info views share: the palette (`--bg`, `--txt`, `--dim` ...), the header, the
+brand, the status badge and the view navigation. Each of those pages includes it
+ahead of its own `style.css`, which holds only what that view does differently.
+To recolour every view at once, override that one file:
+
+```sh
+mkdir -p /etc/qbix/designs/default/common
+cp designs/default/common/chrome.css /etc/qbix/designs/default/common/
+```
+
+It is inlined into each page rather than linked, so a view costs one request
+and paints without waiting for a stylesheet; the pages are compressed on the
+way out (brotli when the extension is loaded, else gzip), so the repetition
+across views costs little.
 
 | View | Serves | Placeholders |
 |---|---|---|
@@ -97,7 +114,9 @@ Every view and file the design does not have comes from `default`.
 
 Rendering is plain substitution, never evaluation:
 
-1. each `{{@file}}` is replaced by that file of the same view, one level deep;
+1. each `{{@file}}` is replaced by that file of the same view, and each
+   `{{@view/file}}` by that file of another view (`{{@common/chrome.css}}`),
+   one level deep;
 2. then each `{{name}}` is replaced by its value, in a single pass.
 
 A value that itself contains braces is never read as a placeholder, and a

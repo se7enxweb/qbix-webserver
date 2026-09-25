@@ -410,19 +410,83 @@ class Q_WebServer_Headers
 			return $body;
 		}
 
-		$accept = strtolower($requestHeaders['accept-encoding'] ?? '');
+		$accept = (string) ($requestHeaders['accept-encoding'] ?? '');
+		$encoded = self::encode($body, $accept);
+		if ($encoded === null) return $body;
+		$headers['Content-Encoding'] = $encoded[0];
+		self::addVary($headers, 'Accept-Encoding');
+		return $encoded[1];
+	}
 
-		// Try gzip (universally supported, no ext needed)
-		if (strpos($accept, 'gzip') !== false && function_exists('gzencode')) {
-			$compressed = gzencode($body, 6);
-			if ($compressed !== false && strlen($compressed) < strlen($body)) {
-				$headers['Content-Encoding'] = 'gzip';
-				$headers['Vary'] = 'Accept-Encoding';
-				return $compressed;
-			}
+	/**
+	 * Encode a body in the best coding the client accepts: brotli when the
+	 * extension is loaded and asked for, else gzip.
+	 *
+	 * @method encode
+	 * @static
+	 * @param {string} $body
+	 * @param {string} $accept the request's Accept-Encoding
+	 * @return {array|null} array(coding, bytes), or null when nothing smaller could be made
+	 */
+	static function encode($body, $accept)
+	{
+		if (function_exists('brotli_compress') and self::acceptsCoding($accept, 'br')) {
+			$br = @brotli_compress($body, 5, defined('BROTLI_TEXT') ? BROTLI_TEXT : 1);
+			if (is_string($br) and strlen($br) < strlen($body)) return array('br', $br);
 		}
+		if (function_exists('gzencode') and self::acceptsCoding($accept, 'gzip')) {
+			$gz = @gzencode($body, 6);
+			if (is_string($gz) and strlen($gz) < strlen($body)) return array('gzip', $gz);
+		}
+		return null;
+	}
 
-		return $body;
+	/**
+	 * Whether an Accept-Encoding value accepts a coding: named, or covered
+	 * by "*", and not refused with q=0.
+	 *
+	 * @method acceptsCoding
+	 * @static
+	 * @param {string} $accept
+	 * @param {string} $coding
+	 * @return {boolean}
+	 */
+	static function acceptsCoding($accept, $coding)
+	{
+		$star = null;
+		foreach (explode(',', strtolower((string) $accept)) as $part) {
+			$bits = explode(';', $part);
+			$name = trim($bits[0]);
+			$q = 1.0;
+			foreach (array_slice($bits, 1) as $param) {
+				$kv = explode('=', $param, 2);
+				if (trim($kv[0]) === 'q' and isset($kv[1])) $q = (float) trim($kv[1]);
+			}
+			if ($name === $coding) return $q > 0;
+			if ($name === '*') $star = $q > 0;
+		}
+		return $star === true;
+	}
+
+	/**
+	 * Add a field name to Vary, keeping what is there.
+	 *
+	 * @method addVary
+	 * @static
+	 * @param {array} &$headers
+	 * @param {string} $field
+	 */
+	static function addVary(&$headers, $field)
+	{
+		foreach ($headers as $k => $v) {
+			if (strcasecmp($k, 'Vary') !== 0) continue;
+			foreach (explode(',', (string) $v) as $have) {
+				if (strcasecmp(trim($have), $field) === 0 or trim($have) === '*') return;
+			}
+			$headers[$k] = trim((string) $v) === '' ? $field : $v . ', ' . $field;
+			return;
+		}
+		$headers['Vary'] = $field;
 	}
 
 	/**

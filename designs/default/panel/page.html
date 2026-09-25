@@ -3,7 +3,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
 <title>{{brand}} Control Panel</title>
 {{brandHead}}
-<style>{{@style.css}}</style></head><body data-auth="{{authState}}">
+<style>{{@common/chrome.css}}{{@style.css}}</style></head><body data-auth="{{authState}}">
 <div class="top">
   <h1><a href="/Q/panel" style="color:inherit;text-decoration:none"><img src="/Q/icon-48.png" alt="" width="24" height="24" style="vertical-align:middle;margin-right:6px">{{brand}}</a></h1>
   <div class="qnav" role="navigation" aria-label="Server views"><a href="/Q/dashboard">Dashboard</a><a href="/Q/panel" aria-current="page">Control Panel</a><a href="/Q/docs">Documentation</a><a href="/Q/phpinfo">PHP Info</a><a href="/Q/health" title="Health, as JSON">Health</a><a href="/Q/metrics" title="Metrics, in Prometheus text format">Metrics</a></div>

@@ -95,7 +95,7 @@ function showAuthScreen(isSetup, info) {
   screen.style.maxWidth = '380px';
   screen.style.margin = '40px auto';
   screen.innerHTML = '<div class="card">'
-    + '<h3 style="margin-bottom:12px">' + (isSetup ? 'Set Panel Password' : 'Panel Login') + '</h3>'
+    + '<h2 style="font-size:14px;font-weight:700;color:var(--txt);margin-bottom:12px">' + (isSetup ? 'Set Panel Password' : 'Panel Login') + '</h2>'
     + (isSetup ? '<p style="font-size:13px;color:var(--dim);margin-bottom:16px">You\'re the first person to access this panel. Set a password to secure it: at least 16 characters, with upper and lower case, a digit and a symbol.</p>' : '')
     + (!isSetup && info && info.hint ? '<p id="auth-hint" style="font-size:13px;color:var(--dim);margin-bottom:16px"></p>' : '')
     + '<div class="form-row"><label>Password</label><input type="password" id="auth-pw" placeholder="' + (isSetup ? 'Choose a password (16+ characters)' : 'Enter password') + '"></div>'

@@ -2012,6 +2012,7 @@ class Q_WebServer
 				self::$rootDir = $savedRoot;
 			}
 			if (class_exists('Q_WebServer_Domains', false)) Q_WebServer_Domains::$currentHost = null;
+			self::$compressFor = null;
 		}
 		$ms = round((microtime(true) - $start) * 1000, 1);
 
@@ -2647,6 +2648,7 @@ class Q_WebServer
 	{
 		$method = $parsed['method'];
 		$path = $parsed['path'];
+		self::$compressFor = null;
 
 		// A suspended or disabled domain, or one of its redirects, is answered
 		// here, before the reverse cache could serve a page stored earlier.
@@ -2847,6 +2849,7 @@ class Q_WebServer
 
 		// 3. Dashboard + Panel + WebSocket + Health (/Q/*)
 		if (strpos($path, '/Q/') === 0) {
+			self::$compressFor = $parsed['headers'] ?? array();
 			// The shell's terminal: its own socket, its own checks (Origin, a
 			// signed-in panel session; see Q_WebServer_Shell_Api::upgrade()).
 			if ($path === '/Q/ws/shell') {
@@ -3014,6 +3017,7 @@ class Q_WebServer
 			// Dashboard (live stats)
 			$handled = Q_WebServer_Dashboard::handle($client, $parsed);
 			if ($handled) return false;
+			self::$compressFor = null;
 		}
 
 		// 2. WebSocket upgrade on any path
@@ -5402,6 +5406,17 @@ WORKER;
 		return false;
 	}
 
+	/**
+	 * The request headers of a request for one of the server's own pages
+	 * (/Q/...), while it is being answered on HTTP/1.1, so sendResponse()
+	 * can compress what it writes; null otherwise. HTTP/2 compresses in
+	 * Q_WebServer_Http2_Connection::respond().
+	 * @property $compressFor
+	 * @type {array|null}
+	 * @static
+	 */
+	static $compressFor = null;
+
 	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
 	{
 		static $reasons = array(
@@ -5416,10 +5431,20 @@ WORKER;
 		self::$lastStatus = $status;
 		self::$lastBody = $body;
 		$body = (string) $body;
-		self::$lastBytes = strlen($body);
 		$conn = $extra['Connection'] ?? 'keep-alive';
 		unset($extra['Connection']);
 		if (!is_array($extra)) $extra = array();
+		// The server's own pages: HTML, CSS, JavaScript and JSON compressed
+		// for a client that accepts it (never tiny bodies, images or event
+		// streams -- see Q_WebServer_Headers::shouldCompress()).
+		if (self::$compressFor !== null and $body !== '') {
+			$ct = $type;
+			foreach ($extra as $k => $v) {
+				if (strcasecmp($k, 'Content-Type') === 0) $ct = (string) $v;
+			}
+			$body = Q_WebServer_Headers::maybeCompress($body, $ct, self::$compressFor, $extra);
+		}
+		self::$lastBytes = strlen($body);
 		// The server's own pages (404, 403 ...) for a domain with HSTS: the
 		// host is the one the gate saw for this request.
 		if (class_exists('Q_WebServer_Domains', false) and Q_WebServer_Domains::$currentHost !== null

@@ -22,7 +22,9 @@
  * shipped design by putting that file in <conf dir>/designs/default/<view>/.
  *
  * Rendering is plain substitution, never evaluation: {{@file}} includes a
- * file of the same view (one level), then every {{name}} is replaced by its
+ * file of the same view and {{@view/file}} one of another view -- the views
+ * share designs/<design>/common/chrome.css that way, overridable file by
+ * file like the rest (one level) -- then every {{name}} is replaced by its
  * value in a single pass, so a value containing braces is never read as a
  * placeholder. Values arrive already escaped for where they go; the shipped
  * templates are byte-for-byte the pages the PHP used to produce.
@@ -144,8 +146,8 @@ class Q_WebServer_Design
 	{
 		$page = self::read($view, $pageName);
 		if ($page === null) return null;
-		$page = preg_replace_callback('/\{\{@([A-Za-z0-9._-]+)\}\}/', function ($m) use ($view) {
-			$included = Q_WebServer_Design::read($view, $m[1]);
+		$page = preg_replace_callback('/\{\{@(?:([A-Za-z0-9._-]+)\/)?([A-Za-z0-9._-]+)\}\}/', function ($m) use ($view) {
+			$included = Q_WebServer_Design::read($m[1] !== '' ? $m[1] : $view, $m[2]);
 			return $included === null ? '' : $included;
 		}, $page);
 		$map = array();

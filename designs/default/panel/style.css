@@ -1,28 +1,8 @@
-
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0b14;--sfc:rgba(22,24,40,.7);--sfc-solid:#161828;--bdr:rgba(255,255,255,.06);
---txt:#e1e4ed;--dim:#6b7089;--ac:#7c5cfc;--ac2:#a78bfa;--grn:#4ade80;--yel:#fbbf24;
---red:#f87171;--cyn:#22d3ee;--glow:rgba(124,92,252,.08)}
-@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--sfc:rgba(255,255,255,.85);--sfc-solid:#fff;--bdr:rgba(0,0,0,.08);
---txt:#1a1a2e;--dim:#6b7089;--glow:rgba(124,92,252,.05)}}
-body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
-  background:var(--bg);color:var(--txt);font-size:14px;min-height:100vh;
-  background-image:
-    radial-gradient(ellipse 80% 60% at 20% 0%, rgba(124,92,252,.12) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 80% 100%, rgba(34,211,238,.06) 0%, transparent 50%);
-  background-attachment:fixed}
+/* The control panel's own rules; the shared chrome is common/chrome.css. */
+body{font-size:14px}
 
 /* ── Header ── */
-.top{padding:16px 20px;display:flex;justify-content:space-between;align-items:center;
-  background:rgba(10,11,20,.8);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
-  border-bottom:1px solid var(--bdr);position:sticky;top:0;z-index:50}
-.top h1{font-size:17px;color:#fff;font-weight:700;letter-spacing:-.3px}
-.top h1 img{vertical-align:middle}
-.status{display:flex;gap:6px;align-items:center;font-size:12px;font-weight:500;
-  padding:4px 12px;border-radius:20px;background:rgba(34,197,94,.1);color:var(--grn)}
-.status .pulse{width:6px;height:6px;border-radius:50%;background:var(--grn);
-  animation:pulse 2s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.top{position:sticky;top:0;z-index:50}
 
 /* ── Tabs ── */
 .tabs{display:flex;gap:0;padding:0 20px;background:rgba(22,24,40,.6);
@@ -157,12 +137,6 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   .top{padding-top:calc(16px + env(safe-area-inset-top))}
   body{padding-bottom:env(safe-area-inset-bottom)}
 }
-.top{flex-wrap:wrap;gap:8px 16px}
-.qnav{display:flex;flex-wrap:wrap;gap:4px;font-size:12px;min-width:0}
-.qnav a{color:var(--dim);text-decoration:none;padding:2px 9px;border:1px solid rgba(255,255,255,.08);border-radius:10px;white-space:nowrap}
-.qnav a:hover,.qnav a:focus-visible{color:#fff;border-color:var(--ac2)}
-.qnav a[aria-current=page]{color:var(--ac2);background:var(--glow)}
-@media(max-width:768px){.top .qnav{order:3;flex:1 0 100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}}
 /* The page opens on the view the server chose from the session (body
    data-auth: panel, mustchange, signin; unknown only for a design or client
    that did not say). The panel's tabs and sections paint only for a signed-in
