@@ -203,6 +203,7 @@ body[data-auth="unknown"] .tabs,body[data-auth="unknown"] .content[id^="tab-"]{v
 .dom-usage{width:100%;border-collapse:collapse;font-size:13px}
 .dom-usage th,.dom-usage td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bdr);vertical-align:top}
 .dom-usage th{font-size:12px;color:var(--dim);font-weight:600}
+.dom-usage select{min-width:7.5em;width:auto}
 .dom-src{display:inline-block;font-size:12px;padding:1px 6px;margin:1px 2px 1px 0;border-radius:999px;border:1px solid var(--bdr);color:var(--dim);white-space:nowrap}
 
 .dom-edit{margin-top:10px;display:grid;gap:6px}
@@ -276,7 +277,7 @@ body[data-auth="unknown"] .tabs,body[data-auth="unknown"] .content[id^="tab-"]{v
     <div class="form-row"><label>Root</label><input id="dom-root" placeholder="empty: the standard folder, &lt;base&gt;/&lt;domain&gt;/doc"></div>
     <div class="form-row"><label>App dir</label><input id="dom-app" placeholder="/var/www/myapp (optional)"></div>
     <div class="form-row"><label>TLS</label><select id="dom-tls"><option value="auto">Auto (ACME)</option><option value="manual">Manual (drop certs)</option><option value="self-signed">Self-signed</option><option value="">HTTP only</option></select></div>
-    <button onclick="addDomain()">Add Domain</button>
+    <button class="btn btn-primary" onclick="addDomain()">Add Domain</button>
   </div>
   <div id="hosts-info"></div>
 </div>
