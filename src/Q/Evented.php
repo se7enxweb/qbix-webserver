@@ -29,9 +29,12 @@ class Q_Evented
 	 *   iopoll  native Io\Poll (PHP 8.6+, or its polyfill): epoll/kqueue
 	 *   revolt  Revolt\EventLoop, when revolt/event-loop is installed
 	 *   select  stream_select(), built in, always available
-	 * "auto" (the default) takes the first available in that order. Force one
-	 * with the QBIX_EVENT_LOOP environment variable or Q.webserver.eventLoop;
-	 * a forced backend this PHP cannot load falls back to auto, with a warning.
+	 * "auto" (the default) takes revolt when available, else select. iopoll is
+	 * only ever used when asked for: it has not yet run against the real
+	 * Io\Poll, only a stand-in, so a PHP that ships it does not switch loops
+	 * unasked. Force one with the QBIX_EVENT_LOOP environment variable or
+	 * Q.webserver.eventLoop; a forced backend this PHP cannot load falls back
+	 * to auto, with a warning.
 	 */
 	static function driver()
 	{
@@ -42,7 +45,7 @@ class Q_Evented
 				fwrite(STDERR, "  event loop \"$want\" is not available here; choosing automatically\n");
 			}
 			if (!$name) {
-				foreach (array('iopoll', 'revolt', 'select') as $n) {
+				foreach (self::AUTO as $n) {
 					if (self::available($n)) { $name = $n; break; }
 				}
 			}
@@ -86,6 +89,9 @@ class Q_Evented
 
 	static function setDriver(Q_Evented_Driver $d) { self::$driver = $d; }
 	protected static $driver = null;
+	/** What "auto" tries, in order. iopoll is opt-in (see driver()). */
+	const AUTO = array('revolt', 'select');
+
 	protected static $backends = array(
 		'iopoll' => 'Q_Evented_IoPoll',
 		'revolt' => 'Q_Evented_Revolt',

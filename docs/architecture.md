@@ -217,8 +217,8 @@ The parent's listeners, timers (the dashboard heartbeat, scheduled tasks, reques
 
 | Backend | Chosen automatically when | Waits with |
 |---|---|---|
-| `iopoll` | the native polling API `Io\Poll` is present (PHP 8.6+, or its polyfill) | epoll / kqueue / event ports / WSAPoll: cost does not grow with the number of connections |
-| `revolt` | `revolt/event-loop` is installed (and `Io\Poll` is not) | whatever Revolt uses (ev, event, uv or stream_select) |
+| `iopoll` | never: only when forced, and only where the native polling API `Io\Poll` is present (PHP 8.6+, or its polyfill) | epoll / kqueue / event ports / WSAPoll: cost does not grow with the number of connections |
+| `revolt` | `revolt/event-loop` is installed | whatever Revolt uses (ev, event, uv or stream_select) |
 | `select` | always available; the fallback | `stream_select()`: fine up to a few hundred connections |
 
 Force one with the `QBIX_EVENT_LOOP` environment variable (it wins) or `Q.webserver.eventLoop` in the configuration:
@@ -227,7 +227,7 @@ Force one with the `QBIX_EVENT_LOOP` environment variable (it wins) or `Q.webser
 { "Q": { "webserver": { "eventLoop": "select" } } }
 ```
 
-`auto` (the default) takes the first available in the order above. A forced backend this PHP cannot load is reported on stderr at start-up and the choice falls back to `auto`, rather than the server refusing to start. `stream_select` is accepted as another name for `select`.
+`auto` (the default) takes `revolt` when it is installed, else `select`. `iopoll` is opt-in: its logic is tested only against a `stream_select()` stand-in, never yet against the real `Io\Poll`, so a PHP that ships that API does not move a server onto it unasked. Set `"eventLoop": "iopoll"` to try it. A forced backend this PHP cannot load is reported on stderr at start-up and the choice falls back to `auto`, rather than the server refusing to start. `stream_select` is accepted as another name for `select`.
 
 All three behave the same way: disabled watchers are skipped, a timer cancelled from its own callback stays cancelled, a repeating timer's next run bounds how long the loop waits, `stop()` from a callback ends the loop before it blocks again, and a timer, deferred, signal or stream callback that throws is logged once and never ends the loop (a stream watcher that throws is cancelled). `tests/unit-evented-backends.php` checks every backend for all of this; where `Io\Poll` is missing it runs the `iopoll` backend's logic over a small `stream_select()` stand-in, and it skips Revolt when that package is not installed.
 

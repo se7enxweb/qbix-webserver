@@ -71,8 +71,10 @@ $choose = function ($env) use ($prop) {
 };
 $native = Q_Evented_IoPoll::available();
 $revolt = class_exists('Revolt\\EventLoop');
-$auto = $native ? 'iopoll' : ($revolt ? 'revolt' : 'select');
+// iopoll is opt-in: auto never picks it, even where Io\Poll exists.
+$auto = $revolt ? 'revolt' : 'select';
 check("auto chooses $auto on this PHP", $choose(null) === $auto);
+check('auto never tries iopoll (opt-in until tested on the real Io\\Poll)', !in_array('iopoll', Q_Evented::AUTO, true));
 check('QBIX_EVENT_LOOP=select forces stream_select', $choose('select') === 'select');
 check('...and "stream_select" is the same', $choose('stream_select') === 'select');
 if (!$native) {
