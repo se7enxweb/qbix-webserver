@@ -357,6 +357,71 @@ API (signed in): `GET ssl/overview`, `GET ssl/certs`, `GET ssl/history[?limit=]`
 answer 409 with what would happen until the body carries `confirm: true`; a
 refused value is 400 with the reasons.
 
+### Cache tab
+
+`/Q/panel/(tab)/cache` runs the response cache ([cache.md](cache.md)) from
+the browser, one or two clicks for each thing, with no file to edit.
+
+- **Status and switches**: one line says what is on ("Cache on · APCu on ·
+  Memory layer off"), with a switch for each of the three; a switch saves and
+  takes effect at once. Under each, where its value comes from: set here, the
+  configuration file, or the default. Anything wrong with APCu (switched off
+  for the CLI, not installed, `apc.use_request_time`, an entry limit as big as
+  its memory) shows as a banner with the fix in plain words.
+- **Live figures**, refreshed every 2 seconds while the tab is open and the
+  page visible (polling stops otherwise): the hit rate over the last interval
+  with a two-minute sparkline and the rate since start; where answers came
+  from (memory, APCu, disk, or a 304 from the validators) as a stacked bar;
+  APCu's memory used, as a gauge; APCu and memory entries, evictions and
+  expunges, stores APCu refused, and stale answers.
+- **Actions**: **Clear everything** asks first, explaining that it is safe
+  (it starts a new generation: nothing is deleted on the spot, every stored
+  page is rendered afresh on its next request, within a second). **Purge a
+  page** takes a path (`/about`, exact, query included) or, ticked, a regular
+  expression (`#^/blog/#`), and says how many copies went. **Warm a page**
+  renders a path again and stores it (compressed and plain); it runs in the
+  background and the result appears in the tab.
+- **Settings with presets**: page lifetime (Off, 1 min, 5 min, 1 hour,
+  custom), serve while refreshing (Off, 30 s, 1 min, 5 min, custom), remember
+  "not found" (the same), largest page in APCu, memory layer size (Off, small,
+  medium, large, custom), minify HTML, and the skip cookies as chips to add
+  and remove. Each has a one-line explanation. **Save** shows what will
+  change before it is pressed, and what did change after; a refused value is
+  shown under its setting.
+- **Stored pages**: the entries on disk (the complete store), newest first,
+  with address, coding, size, age, time left and where each is held (memory,
+  APCu, disk); filter by address, sort by size or age, and purge or warm a
+  row. At most 500 rows, and at most 5,000 files are looked at; the tab says
+  when it stopped early. Bodies are never sent.
+
+Where the settings live: in the panel store, `acl/panel.json`, under the key
+`cache`, nested like `Q.web.cache`. They win over the configuration file,
+are applied at once, and are laid over the configuration again every time the
+server starts, before the cache is initialised. Nothing else in `Q.web.cache`
+is taken from the store. Changes apply in the server process, which is the one
+that answers from the cache.
+
+API (signed in, the same session and default-password rules as every panel
+route; changes need POST and a JSON object body):
+
+- `GET cache` -- `{stats, settings, sources, warnings[{level, title, fix}],
+  dir, generation, refreshHeader, limits, warm[], time}`
+- `GET cache/entries?q=&limit=` -- `{entries[{url, status, coding, size,
+  stored, age, ttl, expired, cleared, heldIn[]}], matched, scanned,
+  truncated, limit}`
+- `POST cache/settings {enabled?, defaultTtl?, staleWhileRevalidate?,
+  negativeTtl?, "skip.cookies"?, "apcu.enabled"?, "apcu.maxSize"?,
+  "memory.maxEntries"?, "memory.maxBytes"?, minifyHtml?}` -- `{saved,
+  changes{name: {from, to}}, settings, sources, warnings, note}`; a value of
+  `null` goes back to the configuration file; an unknown name, a wrong type
+  or a value out of range is 400 with `errors{name: reason}` and nothing is
+  saved.
+- `POST cache/purge {url}` or `{pattern}` -- `{purged, url|pattern, removed}`
+- `POST cache/clear` -- `{cleared, generation, note}`
+- `POST cache/warm {url[, host]}` -- 202 `{warming, url, host}`; only a path
+  on this server (starting with a single `/`), never a full address or
+  another host's URL; the host defaults to the one the panel was reached on.
+
 ### Bookmarkable tabs
 
 Every tab has its own address: `/Q/panel/(tab)/logs`, `/Q/panel/(tab)/system`

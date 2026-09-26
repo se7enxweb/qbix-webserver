@@ -177,6 +177,30 @@ again stays on disk until the sweep removes it.
 
 ---
 
+### From the control panel
+
+The panel's **Cache** tab (`/Q/panel/(tab)/cache`) does all of this without
+editing a file: switches for the cache, APCu and the memory layer, live hit
+rate and memory figures, presets for the lifetimes, **Clear everything** (the
+generation marker above), purging and warming a page, and a browser of the
+stored pages. See the Cache tab in [dashboard.md](dashboard.md).
+
+Settings saved there are kept in the panel store (`acl/panel.json`, key
+`cache`, shaped like `Q.web.cache`) and **win over the configuration file**:
+they are laid over `Q.web.cache` when the server starts, before the cache
+reads it, and at once when saved. Only the ten settings the tab offers are
+taken from there (`enabled`, `defaultTtl`, `staleWhileRevalidate`,
+`negativeTtl`, `skip.cookies`, `apcu.enabled`, `apcu.maxSize`,
+`memory.maxEntries`, `memory.maxBytes`, `minifyHtml`); a value that does not
+pass the same checks as the tab's is ignored. To go back to the file's value,
+save the setting as `null` through the API, or remove it from the `cache` key.
+
+`purge()` now returns how many stored entries it removed, and takes an optional
+second argument: `true` for a regular expression, `false` for an exact URL even
+when it starts and ends with `/` (which the guess otherwise takes for a regex).
+
+---
+
 ### Settings reference
 
 Every setting, with its default. All are under `Q.web.cache`.
