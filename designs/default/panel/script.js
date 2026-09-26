@@ -464,6 +464,7 @@ function showTab(name, opts) {
   if (typeof name !== 'string' || !/^[a-z0-9_-]+$/.test(name)) return;
   var current = document.querySelector('.tab.active');
   if (current && current.dataset.tab === 'logs' && name !== 'logs') onLeaveLogs();
+  if (current && current.dataset.tab === 'cache' && name !== 'cache') cacheStopPolling();
   var target = document.getElementById('tab-' + name);
   if (!target) return;
   document.querySelectorAll('[id^=tab-]').forEach(function(el) { el.classList.add('hidden'); });
@@ -480,6 +481,7 @@ function showTab(name, opts) {
   if (name==='ssl') loadSsl();
   if (name==='autohost') loadAutohost();
   if (name==='security') loadSecurity();
+  if (name==='cache') loadCache();
   if (name==='workers') loadWorkers();
   if (name==='logs') { updateLogControls(); loadLogs(); }
   if (name==='cron') loadCron();
@@ -1737,6 +1739,425 @@ async function recycleAll() {
   var r = await api('workers/recycle', {});
   alert('Recycled: ' + (r.recycled ? r.recycled.immediate + ' immediate, ' + r.recycled.pending + ' pending' : 'done'));
   loadWorkers();
+}
+
+// ── Cache ───────────────────────────────────────────
+// The response cache, live: polled every 2 s while the tab is open (and the
+// page visible), stopped as soon as it is not. Everything that comes from
+// the server -- URLs above all, which any visitor can choose -- is escaped
+// before it goes into markup, and a row's URL reaches its button through a
+// data attribute, never through script text.
+var cacheTimer = null, cacheLast = null, cacheSettings = null, cacheLimits = {};
+var cacheSpark = [], cachePrev = null, cacheEntries = [], cacheSort = {by: 'age', dir: 1};
+var cacheCookies = [], cacheWarmSeen = 0, cacheSearchTimer = null;
+var CACHE_PRESETS = {
+  defaultTtl: {label: 'Page lifetime', help: 'How long a page is kept when the application does not say. Off: only pages that send Cache-Control max-age are kept.',
+    options: [[0, 'Off'], [60, '1 min'], [300, '5 min'], [3600, '1 hour']]},
+  staleWhileRevalidate: {label: 'Serve while refreshing', help: 'Just after a page expires, visitors still get the old copy at once while one request renders the new one.',
+    options: [[0, 'Off'], [30, '30 s'], [60, '1 min'], [300, '5 min']]},
+  negativeTtl: {label: 'Remember "not found"', help: 'Keep 404 and 410 answers briefly, so crawlers hitting dead links do not make the server render each one.',
+    options: [[0, 'Off'], [30, '30 s'], [60, '1 min'], [300, '5 min']]},
+  'apcu.maxSize': {label: 'Largest page in APCu', help: 'Pages up to this size are held in shared memory; bigger ones are read from disk.', unit: 'bytes',
+    options: [[65536, '64 KB'], [262144, '256 KB'], [1048576, '1 MB']]}
+};
+var CACHE_MEMORY = [[0, 0, 'Off'], [500, 16777216, 'Small · 500 pages, 16 MB'], [2000, 67108864, 'Medium · 2,000 pages, 64 MB'], [10000, 268435456, 'Large · 10,000 pages, 256 MB']];
+var CACHE_NAMES = {enabled: 'Cache', defaultTtl: 'Page lifetime', staleWhileRevalidate: 'Serve while refreshing', negativeTtl: 'Remember "not found"',
+  'skip.cookies': 'Skip cookies', 'apcu.enabled': 'APCu', 'apcu.maxSize': 'Largest page in APCu', 'memory.maxEntries': 'Memory layer pages',
+  'memory.maxBytes': 'Memory layer size', minifyHtml: 'Minify HTML'};
+
+function cacheDur(s) {
+  if (s === null || s === undefined) return '—';
+  var neg = s < 0; s = Math.abs(s);
+  var t = s < 60 ? s + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : s < 86400 ? (s / 3600).toFixed(s < 36000 ? 1 : 0) + ' h' : Math.round(s / 86400) + ' d';
+  return neg ? t + ' ago' : t;
+}
+function cacheFmtVal(k, v) {
+  if (v === null || v === undefined) return k === 'apcu.enabled' ? 'automatic' : '—';
+  if (typeof v === 'boolean') return v ? 'on' : 'off';
+  if (Array.isArray(v)) return v.length ? v.join(', ') : 'none';
+  if (k === 'apcu.maxSize' || k === 'memory.maxBytes') return fmtBytesPlain(v);
+  if (k === 'memory.maxEntries') return v ? v.toLocaleString() + ' pages' : 'off';
+  return v ? cacheDur(v) : 'off';
+}
+function cacheToast(msg, kind) {
+  var box = document.getElementById('cache-toasts');
+  if (!box) { box = document.createElement('div'); box.id = 'cache-toasts'; box.className = 'cache-toasts'; box.setAttribute('aria-live', 'polite'); document.body.appendChild(box); }
+  var t = document.createElement('div');
+  t.className = 'cache-toast cache-toast-' + (kind || 'ok');
+  t.textContent = msg;
+  box.appendChild(t);
+  setTimeout(function () { t.classList.add('cache-toast-out'); setTimeout(function () { t.remove(); }, 400); }, kind === 'err' ? 7000 : 4000);
+}
+
+function loadCache() {
+  cachePrev = null; cacheSpark = [];
+  cacheRefresh(true);
+  loadCacheEntries();
+  cacheStartPolling();
+}
+function cacheTabOpen() {
+  var t = document.getElementById('tab-cache');
+  return t && !t.classList.contains('hidden') && document.visibilityState !== 'hidden';
+}
+function cacheStartPolling() {
+  if (cacheTimer) return;
+  cacheTimer = setInterval(function () {
+    if (!cacheTabOpen()) { cacheStopPolling(); return; }
+    cacheRefresh(false);
+  }, 2000);
+}
+function cacheStopPolling() { if (cacheTimer) { clearInterval(cacheTimer); cacheTimer = null; } }
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'visible' && cacheTabOpen()) { cacheRefresh(false); cacheStartPolling(); }
+});
+
+async function cacheRefresh(withSettings) {
+  var r;
+  try { r = await api('cache'); } catch (e) { return; }
+  if (!r || r.error || !r.stats) {
+    document.getElementById('cache-statusline').innerHTML = '<span class="cert-bad">' + escH((r && r.error) || 'Could not read the cache') + '</span>';
+    return;
+  }
+  cacheLast = r;
+  cacheLimits = r.limits || {};
+  cacheRenderStatus(r);
+  cacheRenderCards(r);
+  cacheRenderWarm(r);
+  if (withSettings || !cacheSettings) { cacheSettings = JSON.parse(JSON.stringify(r.settings)); cacheRenderSettings(r); }
+}
+
+function cacheRenderStatus(r) {
+  var s = r.stats, st = r.settings;
+  var memOn = (st['memory.maxEntries'] || 0) > 0;
+  var parts = [
+    '<span class="cache-pill ' + (st.enabled ? 'on' : 'off') + '">Cache ' + (st.enabled ? 'on' : 'off') + '</span>',
+    '<span class="cache-pill ' + (s.apcu.enabled ? 'on' : 'off') + '">APCu ' + (s.apcu.enabled ? 'on' : 'off') + (st['apcu.enabled'] === null ? ' (automatic)' : '') + '</span>',
+    '<span class="cache-pill ' + (memOn ? 'on' : 'off') + '">Memory layer ' + (memOn ? 'on' : 'off') + '</span>'
+  ];
+  document.getElementById('cache-statusline').innerHTML = parts.join('<span class="cache-sep">·</span>');
+  cacheSetSwitch('enabled', !!st.enabled, r.sources.enabled);
+  cacheSetSwitch('apcu', !!s.apcu.enabled, r.sources['apcu.enabled']);
+  cacheSetSwitch('memory', memOn, r.sources['memory.maxEntries']);
+  var b = document.getElementById('cache-banner');
+  var w = r.warnings || [];
+  b.innerHTML = w.map(function (x) {
+    return '<div class="cache-banner cache-banner-' + escH(x.level) + '" role="' + (x.level === 'error' ? 'alert' : 'status') + '"><b>' + escH(x.title) + '</b>'
+      + (x.fix ? '<span>How to fix: ' + escH(x.fix) + '</span>' : '') + '</div>';
+  }).join('');
+}
+function cacheSetSwitch(name, on, source) {
+  var el = document.getElementById('cache-sw-' + name);
+  if (el && document.activeElement !== el) el.checked = on;
+  var src = document.getElementById('cache-src-' + name);
+  if (src) src.textContent = source === 'panel' ? 'set here' : source === 'config' ? 'from the configuration file' : 'default';
+}
+
+function cacheRenderCards(r) {
+  var s = r.stats, now = Date.now();
+  var rate = null;
+  if (cachePrev) {
+    var dh = s.hits - cachePrev.hits, dm = s.misses - cachePrev.misses;
+    if (dh + dm > 0) rate = dh / (dh + dm) * 100;
+  }
+  cachePrev = {hits: s.hits, misses: s.misses, t: now};
+  cacheSpark.push(rate); if (cacheSpark.length > 60) cacheSpark.shift();
+  var hf = s.hitsFrom || {}, segs = [['memory', 'Memory', 'var(--grn)'], ['apcu', 'APCu', 'var(--cyn)'], ['disk', 'Disk', 'var(--ac2)'], ['index', '304', 'var(--yel)']];
+  var total = segs.reduce(function (a, x) { return a + (hf[x[0]] || 0); }, 0);
+  var bar = total ? segs.map(function (x) { var n = hf[x[0]] || 0; return n ? '<span style="width:' + (n / total * 100).toFixed(2) + '%;background:' + x[2] + '" title="' + escH(x[1] + ': ' + n.toLocaleString()) + '"></span>' : ''; }).join('') : '<span class="cache-bar-empty"></span>';
+  var legend = segs.map(function (x) { return '<span><i style="background:' + x[2] + '"></i>' + escH(x[1]) + ' <b>' + (hf[x[0]] || 0).toLocaleString() + '</b></span>'; }).join('');
+  var mem = (s.apcu && s.apcu.memory) || null;
+  var gauge = mem ? cacheGauge(mem.usedPercent, fmtBytesPlain(mem.size - mem.available) + ' of ' + fmtBytesPlain(mem.size))
+    : '<p class="cache-dim">' + (s.apcu.enabled ? 'APCu does not report its memory.' : 'APCu is off.') + '</p>';
+  var m = s.memory || {};
+  function tile(v, l, t) { return '<div class="cache-tile"' + (t ? ' title="' + escH(t) + '"' : '') + '><div class="stat-val">' + v + '</div><div class="stat-lbl">' + escH(l) + '</div></div>'; }
+  document.getElementById('cache-cards').innerHTML =
+    '<div class="card cache-card"><div class="stat-lbl">Hit rate, last 2 s</div><div class="cache-big">' + (rate === null ? '—' : rate.toFixed(1) + '%') + '</div>'
+      + cacheSparkSvg(cacheSpark) + '<div class="cache-dim">' + escH(s.hitRate) + '% since the server started · ' + s.hits.toLocaleString() + ' hits, ' + s.misses.toLocaleString() + ' misses</div></div>'
+    + '<div class="card cache-card"><div class="stat-lbl">Where answers came from</div><div class="cache-bar" role="img" aria-label="' + escH(segs.map(function (x) { return x[1] + ' ' + (hf[x[0]] || 0); }).join(', ')) + '">' + bar + '</div>'
+      + '<div class="cache-legend">' + legend + '</div><div class="cache-dim">304: answered "not modified" from the validators alone.</div></div>'
+    + '<div class="card cache-card"><div class="stat-lbl">APCu memory</div>' + gauge + '</div>'
+    + '<div class="card cache-card cache-tiles">'
+      + tile((s.apcu.entries !== undefined ? s.apcu.entries.toLocaleString() : '—'), 'APCu entries')
+      + tile((m.entries || 0).toLocaleString(), 'In memory', fmtBytesPlain(m.bytes || 0) + (m.enabled ? ' of ' + fmtBytesPlain(m.maxBytes || 0) : ''))
+      + tile(((m.evictions || 0) + (s.apcu.expunges || 0)).toLocaleString(), 'Evictions', 'Memory layer evictions ' + (m.evictions || 0) + ', APCu expunges ' + (s.apcu.expunges || 0))
+      + tile((s.apcu.storeFailures || 0).toLocaleString(), 'Refused stores', 'APCu refused to store a page: it was full or unusable')
+      + tile((s.stale || 0).toLocaleString(), 'Stale answers', 'Old copies served while a fresh one was rendered')
+    + '</div>';
+}
+function cacheSparkSvg(pts) {
+  var w = 240, h = 40, n = 60, d = '', started = false;
+  pts.forEach(function (v, i) {
+    var x = (w * (i + n - pts.length) / (n - 1)).toFixed(1);
+    if (v === null) { started = false; return; }
+    var y = (h - 2 - (h - 4) * v / 100).toFixed(1);
+    d += (started ? 'L' : 'M') + x + ' ' + y; started = true;
+  });
+  return '<svg class="cache-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true"><line x1="0" x2="' + w + '" y1="' + (h / 2) + '" y2="' + (h / 2) + '" class="cache-spark-mid"/><path d="' + d + '"/></svg>';
+}
+function cacheGauge(pct, text) {
+  pct = Math.max(0, Math.min(100, +pct || 0));
+  var col = pct >= 90 ? 'var(--red)' : pct >= 75 ? 'var(--yel)' : 'var(--grn)';
+  return '<div class="cache-gauge"><div class="cache-gauge-fill" style="width:' + pct + '%;background:' + col + '"></div></div>'
+    + '<div class="cache-big" style="font-size:22px">' + pct.toFixed(1) + '%</div><div class="cache-dim">' + escH(text) + ' used</div>';
+}
+
+// One-click switches: each saves at once.
+async function cacheToggle(name, el) {
+  var body = {};
+  if (name === 'enabled') body.enabled = el.checked;
+  if (name === 'apcu') body['apcu.enabled'] = el.checked;
+  if (name === 'memory') {
+    var cur = cacheLast ? cacheLast.settings : {};
+    body['memory.maxEntries'] = el.checked ? 2000 : 0;
+    if (el.checked && (cur['memory.maxBytes'] || 0) < 1048576) body['memory.maxBytes'] = 67108864;
+  }
+  el.disabled = true;
+  var r;
+  try { r = await api('cache/settings', body); } catch (e) { el.disabled = false; return; }
+  el.disabled = false;
+  if (!r || r.error) { el.checked = !el.checked; cacheToast((r && r.error) || 'Could not save', 'err'); return; }
+  cacheToast(cacheChangesText(r.changes) || r.note, 'ok');
+  cacheSettings = null;
+  cacheRefresh(true);
+}
+function cacheChangesText(ch) {
+  var k = Object.keys(ch || {});
+  if (!k.length) return '';
+  return k.map(function (x) { return (CACHE_NAMES[x] || x) + ': ' + cacheFmtVal(x, ch[x].from) + ' → ' + cacheFmtVal(x, ch[x].to); }).join(' · ');
+}
+
+// ── Settings with presets ──
+function cacheRenderSettings(r) {
+  var st = r.settings, src = r.sources || {};
+  cacheCookies = (st['skip.cookies'] || []).slice();
+  var h = '';
+  Object.keys(CACHE_PRESETS).forEach(function (k) {
+    var p = CACHE_PRESETS[k], v = st[k], lim = cacheLimits[k] || {};
+    var known = p.options.some(function (o) { return o[0] === v; });
+    h += '<div class="cache-set" data-key="' + escH(k) + '"><div class="cache-set-head"><b>' + escH(p.label) + '</b><span class="ssl-src">' + escH(cacheSrcText(src[k])) + '</span></div>'
+      + '<div class="cache-seg" role="radiogroup" aria-label="' + escH(p.label) + '">'
+      + p.options.map(function (o) { return '<button type="button" role="radio" aria-checked="' + (o[0] === v) + '" class="' + (o[0] === v ? 'sel' : '') + '" data-v="' + o[0] + '" onclick="cachePick(this)">' + escH(o[1]) + '</button>'; }).join('')
+      + '<button type="button" role="radio" aria-checked="' + !known + '" class="' + (known ? '' : 'sel') + '" data-v="custom" onclick="cachePick(this)">Custom</button></div>'
+      + '<div class="cache-custom' + (known ? ' hidden' : '') + '"><input type="number" min="' + (lim.min || 0) + '" max="' + (lim.max || '') + '" value="' + escH(v) + '" oninput="cacheDirty()" aria-label="' + escH(p.label + ' in ' + (p.unit || 'seconds')) + '"> <span class="cache-dim">' + escH(p.unit || 'seconds') + '</span></div>'
+      + '<div class="cache-help">' + escH(p.help) + '</div><div class="cache-err" id="cache-err-' + escH(k.replace('.', '-')) + '"></div></div>';
+  });
+  // Memory layer size: two numbers behind one set of presets.
+  var me = st['memory.maxEntries'] || 0, mb = st['memory.maxBytes'] || 0;
+  var mk = CACHE_MEMORY.some(function (o) { return o[0] === me && (o[0] === 0 || o[1] === mb); });
+  h += '<div class="cache-set" data-key="memory"><div class="cache-set-head"><b>Memory layer</b><span class="ssl-src">' + escH(cacheSrcText(src['memory.maxEntries'])) + '</span></div>'
+    + '<div class="cache-seg" role="radiogroup" aria-label="Memory layer size">'
+    + CACHE_MEMORY.map(function (o) { var sel = o[0] === me && (o[0] === 0 || o[1] === mb); return '<button type="button" role="radio" aria-checked="' + sel + '" class="' + (sel ? 'sel' : '') + '" data-v="' + o[0] + '" data-b="' + o[1] + '" onclick="cachePick(this)">' + escH(o[2]) + '</button>'; }).join('')
+    + '<button type="button" role="radio" aria-checked="' + !mk + '" class="' + (mk ? '' : 'sel') + '" data-v="custom" onclick="cachePick(this)">Custom</button></div>'
+    + '<div class="cache-custom' + (mk ? ' hidden' : '') + '"><input type="number" min="0" max="' + ((cacheLimits['memory.maxEntries'] || {}).max || '') + '" value="' + escH(me) + '" oninput="cacheDirty()" aria-label="Pages kept in memory"> <span class="cache-dim">pages, up to</span> '
+    + '<input type="number" min="0" max="' + ((cacheLimits['memory.maxBytes'] || {}).max || '') + '" value="' + escH(mb) + '" oninput="cacheDirty()" aria-label="Bytes kept in memory"> <span class="cache-dim">bytes</span></div>'
+    + '<div class="cache-help">The busiest pages kept inside the server process itself: the fastest answers of all, at the cost of that much memory.</div><div class="cache-err" id="cache-err-memory"></div></div>';
+  h += '<div class="cache-set"><div class="cache-set-head"><b>Minify HTML</b><span class="ssl-src">' + escH(cacheSrcText(src.minifyHtml)) + '</span></div>'
+    + '<label class="cache-switch cache-switch-sm"><input type="checkbox" id="cache-minify"' + (st.minifyHtml ? ' checked' : '') + ' onchange="cacheDirty()"><span class="cache-slider"></span><span>Remove extra whitespace from stored HTML pages</span></label>'
+    + '<div class="cache-err" id="cache-err-minifyHtml"></div></div>';
+  h += '<div class="cache-set"><div class="cache-set-head"><b>Skip cookies</b><span class="ssl-src">' + escH(cacheSrcText(src['skip.cookies'])) + '</span></div>'
+    + '<div class="cache-chips" id="cache-chips"></div>'
+    + '<div class="dom-row" style="margin-top:6px"><input id="cache-cookie-new" placeholder="Cookie name, e.g. eZSESSID" maxlength="128" onkeydown="if(event.key===\'Enter\'){event.preventDefault();cacheCookieAdd()}"><button type="button" class="btn btn-ghost" onclick="cacheCookieAdd()">Add</button></div>'
+    + '<div class="cache-help">A visitor carrying one of these cookies (a signed-in session) always gets a freshly rendered page, and it is never stored. A name also matches cookies it starts.</div><div class="cache-err" id="cache-err-skip-cookies"></div></div>';
+  h += '<div class="cache-save"><button class="btn btn-primary" id="cache-save" onclick="cacheSave()">Save</button><span id="cache-pending" class="cache-dim"></span></div>';
+  document.getElementById('cache-settings').innerHTML = h;
+  cacheRenderChips();
+  cacheDirty();
+}
+function cacheSrcText(s) { return s === 'panel' ? 'set here' : s === 'config' ? 'configuration file' : 'default'; }
+function cachePick(btn) {
+  var seg = btn.parentNode;
+  seg.querySelectorAll('button').forEach(function (b) { b.classList.remove('sel'); b.setAttribute('aria-checked', 'false'); });
+  btn.classList.add('sel'); btn.setAttribute('aria-checked', 'true');
+  var custom = seg.parentNode.querySelector('.cache-custom');
+  if (custom) custom.classList.toggle('hidden', btn.dataset.v !== 'custom');
+  if (btn.dataset.v === 'custom' && custom) { var i = custom.querySelector('input'); if (i) i.focus(); }
+  cacheDirty();
+}
+function cacheRenderChips() {
+  var el = document.getElementById('cache-chips');
+  if (!el) return;
+  el.innerHTML = cacheCookies.length ? cacheCookies.map(function (c, i) {
+    return '<span class="dom-chip">' + escH(c) + '<button type="button" class="dom-x" aria-label="Remove ' + escH(c) + '" data-i="' + i + '" onclick="cacheCookieRemove(this)">×</button></span>';
+  }).join('') : '<span class="cache-dim">None: every visitor may be served a stored page.</span>';
+}
+function cacheCookieAdd() {
+  var i = document.getElementById('cache-cookie-new'), v = i.value.trim(), err = document.getElementById('cache-err-skip-cookies');
+  if (!v) return;
+  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/.test(v)) { err.textContent = 'A cookie name has no spaces, commas, semicolons or quotes.'; return; }
+  err.textContent = '';
+  if (cacheCookies.indexOf(v) < 0) cacheCookies.push(v);
+  i.value = '';
+  cacheRenderChips(); cacheDirty();
+}
+function cacheCookieRemove(btn) { cacheCookies.splice(+btn.dataset.i, 1); cacheRenderChips(); cacheDirty(); }
+
+// What the form says now, as the API names it.
+function cacheFormValues() {
+  var out = {};
+  document.querySelectorAll('#cache-settings .cache-set[data-key]').forEach(function (set) {
+    var k = set.dataset.key, sel = set.querySelector('.cache-seg .sel'), inputs = set.querySelectorAll('.cache-custom input');
+    if (!sel) return;
+    var custom = sel.dataset.v === 'custom';
+    if (k === 'memory') {
+      out['memory.maxEntries'] = custom ? cacheNum(inputs[0].value) : +sel.dataset.v;
+      if (custom) out['memory.maxBytes'] = cacheNum(inputs[1].value);
+      else if (+sel.dataset.v > 0) out['memory.maxBytes'] = +sel.dataset.b;
+      return;
+    }
+    out[k] = custom ? cacheNum(inputs[0].value) : +sel.dataset.v;
+  });
+  var mn = document.getElementById('cache-minify');
+  if (mn) out.minifyHtml = mn.checked;
+  out['skip.cookies'] = cacheCookies.slice();
+  return out;
+}
+function cacheNum(v) { v = String(v).trim(); return /^\d+$/.test(v) ? parseInt(v, 10) : v; }
+function cacheDiff() {
+  var f = cacheFormValues(), d = {};
+  Object.keys(f).forEach(function (k) { if (JSON.stringify(f[k]) !== JSON.stringify(cacheSettings ? cacheSettings[k] : undefined)) d[k] = f[k]; });
+  return d;
+}
+function cacheDirty() {
+  var el = document.getElementById('cache-pending'), btn = document.getElementById('cache-save');
+  if (!el) return;
+  var d = cacheDiff(), k = Object.keys(d);
+  el.textContent = k.length ? 'Will change: ' + k.map(function (x) { return (CACHE_NAMES[x] || x) + ' → ' + cacheFmtVal(x, d[x]); }).join(' · ') : 'No changes.';
+  btn.disabled = !k.length;
+  btn.classList.toggle('disabled', !k.length);
+}
+async function cacheSave() {
+  var d = cacheDiff();
+  if (!Object.keys(d).length) return;
+  document.querySelectorAll('#cache-settings .cache-err').forEach(function (e) { e.textContent = ''; });
+  var r;
+  try { r = await api('cache/settings', d); } catch (e) { return; }
+  if (!r || r.error) {
+    var shown = false;
+    Object.keys((r && r.errors) || {}).forEach(function (k) {
+      var id = k.indexOf('memory.') === 0 ? 'memory' : k.replace('.', '-');
+      var el = document.getElementById('cache-err-' + id);
+      if (el) { el.textContent = (CACHE_NAMES[k] || k) + ' ' + r.errors[k] + '.'; shown = true; }
+    });
+    cacheToast(shown ? 'Not saved: see the highlighted settings.' : ((r && r.error) || 'Could not save'), 'err');
+    return;
+  }
+  cacheToast('Saved · ' + (cacheChangesText(r.changes) || 'nothing changed'), 'ok');
+  cacheSettings = null;
+  cacheRefresh(true);
+}
+
+// ── Actions ──
+function cacheClearAsk() {
+  var overlay = document.createElement('div');
+  overlay.className = 'dialog-overlay';
+  overlay.onclick = function (e) { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = '<div class="dialog cache-dialog" role="dialog" aria-modal="true" aria-labelledby="cache-clear-h"><h3 id="cache-clear-h">Clear everything?</h3>'
+    + '<p>Every stored page becomes out of date and is rendered afresh on its next request. This is safe: nothing is deleted on the spot, visitors never see an error, and it takes effect within a second. Expect the site to be a little slower for a minute while the cache fills again.</p>'
+    + '<div class="btn-row"><button class="btn btn-ghost" onclick="this.closest(\'.dialog-overlay\').remove()">Cancel</button>'
+    + '<button class="btn btn-red" id="cache-clear-go">Clear everything</button></div></div>';
+  document.body.appendChild(overlay);
+  var go = overlay.querySelector('#cache-clear-go');
+  go.onclick = async function () { overlay.remove(); await cacheClear(); };
+  go.focus();
+}
+async function cacheClear() {
+  var r;
+  try { r = await api('cache/clear', {}); } catch (e) { return; }
+  if (!r || r.error) { cacheToast((r && r.error) || 'Could not clear', 'err'); return; }
+  cacheToast('Cleared. ' + (r.note || ''), 'ok');
+  setTimeout(loadCacheEntries, 1200);
+}
+async function cachePurge(url) {
+  var r;
+  try { r = await api('cache/purge', {url: url}); } catch (e) { return; }
+  if (!r || r.error) { cacheToast((r && r.error) || 'Could not purge', 'err'); return; }
+  cacheToast(r.removed ? 'Purged ' + url + ': ' + r.removed + ' stored cop' + (r.removed === 1 ? 'y' : 'ies') + ' removed.' : 'Nothing stored for ' + url + '.', r.removed ? 'ok' : 'info');
+  loadCacheEntries();
+}
+function cachePurgeForm() {
+  var v = document.getElementById('cache-purge-url').value.trim();
+  if (!v) return;
+  if (document.getElementById('cache-purge-regex').checked) return cachePurgePattern(v);
+  if (v.charAt(0) !== '/') { cacheToast('Enter a path on this server, starting with / (for example /about).', 'err'); return; }
+  cachePurge(v);
+}
+async function cachePurgePattern(p) {
+  var r;
+  try { r = await api('cache/purge', {pattern: p}); } catch (e) { return; }
+  if (!r || r.error) { cacheToast((r && r.error) || 'Could not purge', 'err'); return; }
+  cacheToast('Purged ' + r.removed + ' stored page' + (r.removed === 1 ? '' : 's') + ' matching ' + p + '.', r.removed ? 'ok' : 'info');
+  loadCacheEntries();
+}
+function cachePurgeRow(btn) { cachePurge(btn.dataset.url); }
+function cacheWarmRow(btn) { cacheWarm(btn.dataset.url); }
+function cacheWarmForm() {
+  var v = document.getElementById('cache-warm-url').value.trim();
+  if (!v) return;
+  if (v.charAt(0) !== '/' || v.charAt(1) === '/') { cacheToast('Enter a path on this server, starting with / (for example /about), not a full address.', 'err'); return; }
+  cacheWarm(v);
+}
+async function cacheWarm(url) {
+  var r;
+  try { r = await api('cache/warm', {url: url}); } catch (e) { return; }
+  if (!r || r.error) { cacheToast((r && r.error) || 'Could not warm', 'err'); return; }
+  cacheToast('Warming ' + url + ' … the result shows in a moment.', 'info');
+}
+function cacheRenderWarm(r) {
+  var list = r.warm || [], el = document.getElementById('cache-warm-log');
+  if (!el) return;
+  if (list.length && list[0].time > cacheWarmSeen) {
+    if (cacheWarmSeen) {
+      var w = list[0], res = w.results || {}, ok = Object.keys(res).some(function (k) { return res[k].status === 200; });
+      cacheToast((ok ? 'Warmed ' : 'Could not warm ') + w.url + ': ' + Object.keys(res).map(function (k) { return k + ' ' + (res[k].status || 'no answer'); }).join(', '), ok ? 'ok' : 'err');
+      loadCacheEntries();
+    }
+    cacheWarmSeen = list[0].time;
+  } else if (!cacheWarmSeen) cacheWarmSeen = 1;
+  el.innerHTML = list.slice(0, 5).map(function (w) {
+    var res = w.results || {};
+    return '<div><span class="cache-dim">' + escH(new Date(w.time * 1000).toLocaleTimeString()) + '</span> <code>' + escH(w.url) + '</code> '
+      + Object.keys(res).map(function (k) { var s = res[k].status; return '<span class="' + (s === 200 ? 'cert-ok' : 'cert-bad') + '">' + escH(k) + ' ' + escH(s || 'no answer') + '</span>'; }).join(' ') + '</div>';
+  }).join('');
+}
+
+// ── Stored pages ──
+async function loadCacheEntries() {
+  var q = (document.getElementById('cache-q') || {}).value || '';
+  var r;
+  try { r = await api('cache/entries?limit=200&q=' + encodeURIComponent(q)); } catch (e) { return; }
+  var info = document.getElementById('cache-entries-info');
+  if (!r || r.error) { info.innerHTML = '<span class="cert-bad">' + escH((r && r.error) || 'Could not list the stored pages') + '</span>'; return; }
+  cacheEntries = r.entries || [];
+  info.textContent = r.matched + ' stored page' + (r.matched === 1 ? '' : 's') + (q ? ' matching "' + q + '"' : '')
+    + (r.matched > cacheEntries.length ? ', newest ' + cacheEntries.length + ' shown' : '')
+    + (r.truncated ? ' (looked at the first ' + r.scanned + ' files only)' : '');
+  cacheRenderEntries();
+}
+function cacheSearch() { clearTimeout(cacheSearchTimer); cacheSearchTimer = setTimeout(loadCacheEntries, 300); }
+function cacheSortBy(by) {
+  cacheSort = {by: by, dir: cacheSort.by === by ? -cacheSort.dir : 1};
+  cacheRenderEntries();
+}
+function cacheRenderEntries() {
+  var el = document.getElementById('cache-entries');
+  if (!el) return;
+  if (!cacheEntries.length) { el.innerHTML = '<p class="cache-dim">Nothing stored' + ((document.getElementById('cache-q') || {}).value ? ' that matches.' : ' yet.') + '</p>'; return; }
+  var by = cacheSort.by, dir = cacheSort.dir;
+  var rows = cacheEntries.slice().sort(function (a, b) {
+    var x = by === 'size' ? b.size - a.size : (a.age || 0) - (b.age || 0);
+    return x * dir;
+  });
+  function th(k, l) { var a = cacheSort.by === k ? (cacheSort.dir > 0 ? ' ▾' : ' ▴') : ''; return '<th><button type="button" class="cache-sort" onclick="cacheSortBy(\'' + k + '\')">' + l + a + '</button></th>'; }
+  el.innerHTML = '<table class="cache-table"><thead><tr><th>Page</th><th>Coding</th>' + th('size', 'Size') + th('age', 'Age') + '<th>Time left</th><th>Held in</th><th></th></tr></thead><tbody>'
+    + rows.map(function (e) {
+      var left = e.cleared ? '<span class="cert-warn">cleared</span>' : e.ttl === null ? 'no expiry' : e.expired ? '<span class="cert-warn">expired ' + escH(cacheDur(-e.ttl).replace(' ago', '')) + ' ago</span>' : escH(cacheDur(e.ttl));
+      return '<tr><td class="cache-url" data-label="Page"><code title="' + escH(e.url) + '">' + escH(e.url) + '</code>' + (e.status !== 200 ? ' <span class="dom-src">' + escH(e.status) + '</span>' : '') + '</td>'
+        + '<td data-label="Coding">' + escH(e.coding) + '</td><td data-label="Size">' + escH(fmtBytesPlain(e.size)) + '</td>'
+        + '<td data-label="Age">' + escH(cacheDur(e.age)) + '</td><td data-label="Time left">' + left + '</td>'
+        + '<td data-label="Held in">' + (e.heldIn || []).map(function (h) { return '<span class="cache-held cache-held-' + escH(h) + '">' + escH(h === 'apcu' ? 'APCu' : h) + '</span>'; }).join('') + '</td>'
+        + '<td class="cache-row-btns"><button class="btn btn-sm btn-ghost" data-url="' + escH(e.url) + '" onclick="cacheWarmRow(this)" title="Render and store again">Warm</button>'
+        + '<button class="btn btn-sm btn-red" data-url="' + escH(e.url) + '" onclick="cachePurgeRow(this)">Purge</button></td></tr>';
+    }).join('') + '</tbody></table>';
 }
 
 // ── Logs ────────────────────────────────────────────
