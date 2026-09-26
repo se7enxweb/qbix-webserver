@@ -214,7 +214,7 @@ there is currently no way to see from the outside whether APCu is doing anything
 
 Measured before any change, on `origin/main` at `07f7a28`.
 
-**Machine.** PHP 8.5.11, 11 cores, 46.8 GB RAM (31 GB available), load 6–7
+**Machine.** PHP 8.5.11, 12 cores (the benchmark then printed 11: it missed the first CPU in /proc/cpuinfo, since fixed), 46.8 GB RAM (31 GB available), load 6–7
 throughout (a shared host), APCu 5.1.28, curl 7.76.1. Server started from the
 source tree, 8 workers, `opcache.enable_cli=1` in every configuration so the
 uncached case is not handicapped:

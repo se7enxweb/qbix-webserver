@@ -136,7 +136,7 @@ the copy it inherited. When application code in a worker calls `purge()` or
 beside the entries changes, and the server empties its memory within a second --
 the same delay as the generation marker.
 
-What it saves depends on the size of the page. Measured on an 11-core host,
+What it saves depends on the size of the page. Measured on a 12-core host,
 server CPU per cached hit: about the same for a 3 KB gzipped page (~0.19 ms
 either way), about 12% less for a 44 KB one (0.23 → 0.20 ms) in most rounds --
 a gain close to the noise of a busy shared host. Worth trying for large cached

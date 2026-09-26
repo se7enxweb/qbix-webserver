@@ -107,7 +107,9 @@ function machine()
 	);
 
 	$cpuinfo = @file_get_contents('/proc/cpuinfo');
-	if ($cpuinfo !== false) $m['cores'] = max(1, substr_count($cpuinfo, "\nprocessor"));
+	// Counted at line starts: "\nprocessor" missed the first entry, which
+	// begins the file, and so reported one core too few.
+	if ($cpuinfo !== false) $m['cores'] = max(1, preg_match_all('/^processor\s*:/m', $cpuinfo));
 	else if (function_exists('shell_exec')) $m['cores'] = max(1, (int) @shell_exec('getconf _NPROCESSORS_ONLN 2>/dev/null'));
 
 	$loadavg = @file_get_contents('/proc/loadavg');
