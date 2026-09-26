@@ -2990,8 +2990,23 @@ class Q_WebServer_CompatFileWrapper
 	 * @method forgetStats
 	 * @static
 	 */
-	static function forgetStats()
+	static function forgetStats($force = false)
 	{
+		// Q.compat.statTtl: keep what is known about files across requests
+		// for up to this many seconds, as opcache.revalidate_freq does for
+		// compiles. 0 (the default) forgets at every request boundary.
+		// Changes made through this worker, clearstatcache() and another
+		// program having run still forget at once; only a change made by
+		// another process -- another worker, the web server next door, an
+		// editor -- can go unseen, for at most this long.
+		// $force: a worker just forked, whose stats describe the parent at
+		// the moment of the fork -- always forgotten, whatever the TTL.
+		$ttl = self::statTtl();
+		$now = microtime(true);
+		if (!$force and $ttl > 0 and $now - self::$statsSince < $ttl) {
+			return;
+		}
+		self::$statsSince = $now;
 		self::dropStats();
 		if (!self::$servedMtime or !self::opcacheTrustsItsCopy()) {
 			return;
@@ -3020,6 +3035,22 @@ class Q_WebServer_CompatFileWrapper
 		self::$statMemo = array();
 		self::$includeMemo = array();
 		self::$existMemo = array();
+	}
+
+	/** @var float when forgetStats() last forgot, for Q.compat.statTtl */
+	private static $statsSince = 0.0;
+
+	/** @var float|null Q.compat.statTtl in seconds, once read */
+	private static $statTtl = null;
+
+	/** Q.compat.statTtl, between 0 and 10 seconds. */
+	private static function statTtl()
+	{
+		if (self::$statTtl === null) {
+			$v = class_exists('Q_Config', false) ? Q_Config::get('Q', 'compat', 'statTtl', 0) : 0;
+			self::$statTtl = max(0.0, min(10.0, (float) $v));
+		}
+		return self::$statTtl;
 	}
 
 	/** @var bool|null whether the opcode cache serves includes without checking the file */

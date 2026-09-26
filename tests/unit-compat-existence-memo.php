@@ -19,11 +19,42 @@
  *     file it expects);
  *   - the process shims behave exactly as the functions they replace, and the
  *     transform rewrites global calls only, never a method called exec();
+ *   - Q.compat.statTtl keeps stats across request boundaries for at most that
+ *     long, and a freshly forked worker forgets regardless.
  *
  *   php tests/unit-compat-existence-memo.php
  */
 
 if (!defined('DS')) define('DS', DIRECTORY_SEPARATOR);
+
+class Q_Config
+{
+	static $data = array();
+
+	static function get()
+	{
+		$args = func_get_args();
+		$default = array_pop($args);
+		$node = self::$data;
+		foreach ($args as $k) {
+			if (!is_array($node) or !array_key_exists($k, $node)) return $default;
+			$node = $node[$k];
+		}
+		return $node;
+	}
+
+	static function set()
+	{
+		$args = func_get_args();
+		$value = array_pop($args);
+		$node = &self::$data;
+		foreach ($args as $k) {
+			if (!isset($node[$k]) or !is_array($node[$k])) $node[$k] = array();
+			$node = &$node[$k];
+		}
+		$node = $value;
+	}
+}
 
 require __DIR__ . '/../src/Q/WebServer/Compat.php';
 
@@ -118,6 +149,51 @@ check('a static method called exec() is not', strpos($t, 'PDO::exec("z")') !== f
 check('\\system() is rewritten', strpos($t, '_system("w")') !== false, true);
 check('a nullsafe method called system() is not', strpos($t, '$s?->system(1)') !== false, true);
 check('shell_exec() is rewritten', strpos($t, '_shell_exec("v")') !== false, true);
+
+// ── Q.compat.statTtl ─────────────────────────────────────────────────────
+$reset = function () use ($W) {
+	$r = new ReflectionProperty($W, 'statTtl');
+	$r->setAccessible(true);
+	$r->setValue(null, null);
+	$s = new ReflectionProperty($W, 'statsSince');
+	$s->setAccessible(true);
+	$s->setValue(null, 0.0);
+};
+
+$reset();                                   // default: 0
+$W::forgetStats(true);
+check('ttl 0: missing', $W::existsAndIsDir($f), null);
+touch($f);
+$W::forgetStats();
+check('ttl 0: every request boundary forgets', $W::existsAndIsDir($f), false);
+unlink($f);
+
+Q_Config::set('Q', 'compat', 'statTtl', 0.5);
+$reset();
+$W::forgetStats(true);
+check('ttl 0.5: missing', $W::existsAndIsDir($f), null);
+touch($f);
+$W::forgetStats();
+check('ttl 0.5: kept across a boundary inside the window', $W::existsAndIsDir($f), null);
+$W::forgetStats(true);
+check('ttl 0.5: a forked worker forgets regardless', $W::existsAndIsDir($f), false);
+unlink($f);
+$W::forgetStats();
+check('ttl 0.5: ...and keeps again inside the new window', $W::existsAndIsDir($f), false);
+usleep(600000);
+$W::forgetStats();
+check('ttl 0.5: forgotten once the window has passed', $W::existsAndIsDir($f), null);
+$C::_clearstatcache();
+touch($f);
+$C::_clearstatcache();
+check('ttl 0.5: clearstatcache() still forgets at once', $W::existsAndIsDir($f), false);
+unlink($f);
+
+Q_Config::set('Q', 'compat', 'statTtl', 99);
+$reset();
+$r = new ReflectionMethod($W, 'statTtl');
+$r->setAccessible(true);
+check('ttl is capped at 10 seconds', $r->invoke(null), 10.0);
 
 @rmdir($dir);
 echo "\n";

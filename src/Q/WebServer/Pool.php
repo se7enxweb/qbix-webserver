@@ -488,7 +488,7 @@ class Q_WebServer_Pool
 			// up again; kept bytes and transforms are then checked against
 			// them, so an entry for a file changed since is not used.
 			if (class_exists('Q_WebServer_CompatFileWrapper', false)) {
-				Q_WebServer_CompatFileWrapper::forgetStats();
+				Q_WebServer_CompatFileWrapper::forgetStats(true);
 				// A worker has request boundaries, so it may also remember
 				// which paths exist; see existsAndIsDir().
 				Q_WebServer_CompatFileWrapper::rememberExistence(true);
