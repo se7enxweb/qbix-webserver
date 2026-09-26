@@ -1,0 +1,30 @@
+[Unit]
+Description=Exponential Velocity web server
+Documentation=https://github.com/se7enxweb/exponential-velocity/tree/maintain/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qbix
+Group=qbix
+# QBIX_ROOT, QBIX_SITE and QBIX_OPTS: see the file for what each does.
+EnvironmentFile=-/etc/default/exponential-velocity
+WorkingDirectory=/var/lib/exponential-velocity
+ExecStart=/usr/bin/qbixserver --config=${QBIX_SITE} --root=${QBIX_ROOT} --pid=/run/exponential-velocity/qbixserver.pid $QBIX_OPTS
+ExecReload=/usr/bin/qbixserver --reload --pid=/run/exponential-velocity/qbixserver.pid
+PIDFile=/run/exponential-velocity/qbixserver.pid
+RuntimeDirectory=exponential-velocity
+StateDirectory=exponential-velocity
+LogsDirectory=exponential-velocity
+Restart=on-failure
+RestartSec=5
+# Ports below 1024 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

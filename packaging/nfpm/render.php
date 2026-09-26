@@ -6,7 +6,7 @@
  *   php packaging/nfpm/render.php <distro> <version> > nfpm.yaml
  *   php packaging/nfpm/render.php --list            # the distributions, one per line
  *
- * The package installs the server under /usr/share/qbix-webserver (the phar,
+ * The package installs the server under /usr/share/exponential-velocity (the phar,
  * the console tools, the baseline, the designs and docs), qbixserver /
  * qbixctl / qbixconsole in /usr/bin, a systemd unit, and the /etc/qbix tree
  * (docs/layout.md) as configuration that upgrades never overwrite.
@@ -17,6 +17,11 @@
  * default on Debian and Ubuntu, weak on EL. The names come from the engine's
  * own install hints (Q_WebServer_Extensions::installHints), for the PHP the
  * distribution ships, so no list is kept here.
+ *
+ * It replaces the package's former name, qbix-webserver: installed over it,
+ * it takes its place (deb Replaces/Breaks/Provides, rpm Obsoletes/Provides),
+ * and the scripts carry its settings, state and service across (preinstall,
+ * postinstall, and posttrans on rpm).
  *
  * The spec is JSON, which nfpm reads as the YAML it is a subset of.
  */
@@ -72,9 +77,9 @@ if ($format === 'deb') {
 }
 $depends = array_values(array_unique($depends));
 
-// What goes under /usr/share/qbix-webserver: the tracked files of these paths.
+// What goes under /usr/share/exponential-velocity: the tracked files of these paths.
 $root = dirname(__DIR__, 2);
-$share = '/usr/share/qbix-webserver';
+$share = '/usr/share/exponential-velocity';
 $contents = array();
 exec('git -C ' . escapeshellarg($root) . ' ls-files -- bin/qbixserver.phar qbixserver.php qbixctl.php qbixconsole.php qshell.php src build designs docs web LICENSE', $files, $rc);
 if ($rc !== 0 || !$files) {
@@ -87,8 +92,8 @@ foreach ($files as $f) {
 foreach (array('qbixserver', 'qbixctl', 'qbixconsole') as $t) {
 	$contents[] = array('src' => "packaging/bin/$t", 'dst' => "/usr/bin/$t", 'file_info' => array('mode' => 0755));
 }
-$contents[] = array('src' => 'packaging/systemd/qbix-webserver.service', 'dst' => "$unitDir/qbix-webserver.service", 'file_info' => array('mode' => 0644));
-$contents[] = array('src' => 'packaging/systemd/qbix-webserver.default', 'dst' => '/etc/default/qbix-webserver', 'type' => 'config|noreplace', 'file_info' => array('mode' => 0644));
+$contents[] = array('src' => 'packaging/systemd/exponential-velocity.service', 'dst' => "$unitDir/exponential-velocity.service", 'file_info' => array('mode' => 0644));
+$contents[] = array('src' => 'packaging/systemd/exponential-velocity.default', 'dst' => '/etc/default/exponential-velocity', 'type' => 'config|noreplace', 'file_info' => array('mode' => 0644));
 foreach (array('qbix.conf', 'ports.conf', 'envvars', 'sites-available/default.conf') as $f) {
 	$contents[] = array('src' => "packaging/etc/qbix/$f", 'dst' => "/etc/qbix/$f", 'type' => 'config|noreplace', 'file_info' => array('mode' => 0644));
 }
@@ -97,7 +102,7 @@ foreach (array('conf-available', 'conf-enabled', 'mods-available', 'mods-enabled
 }
 
 $spec = array(
-	'name' => 'qbix-webserver',
+	'name' => 'exponential-velocity',
 	'arch' => 'all',
 	'platform' => 'linux',
 	'version' => $version,
@@ -114,14 +119,23 @@ $spec = array(
 		. "that are missing, with the command to install them.",
 	'depends' => $depends,
 	'recommends' => $recommends,
+	// The former name: installed over it, this package takes its place.
+	'replaces' => array('qbix-webserver'),
+	'provides' => array('qbix-webserver'),
 	'contents' => $contents,
 	'scripts' => array(
+		'preinstall' => 'packaging/nfpm/preinstall.sh',
 		'postinstall' => 'packaging/nfpm/postinstall.sh',
 		'preremove' => 'packaging/nfpm/preremove.sh',
 	),
 );
 if ($format === 'rpm') {
-	$spec['rpm'] = array('group' => 'System Environment/Daemons', 'summary' => 'A PHP application server');
+	// rpm removes an obsoleted package after %post: posttrans finishes the takeover.
+	$spec['rpm'] = array('group' => 'System Environment/Daemons', 'summary' => 'A PHP application server',
+		'scripts' => array('posttrans' => 'packaging/nfpm/posttrans.sh'));
+} else {
+	// Breaks, with Replaces, lets dpkg take over the old package's files.
+	$spec['deb'] = array('breaks' => array('qbix-webserver'));
 }
 fwrite(STDERR, sprintf("%s: %s, PHP %s, %d dependencies, %d recommended, %d files%s\n",
 	$distro, $format, $php, count($depends), count($recommends), count($contents),

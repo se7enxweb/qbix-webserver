@@ -109,7 +109,7 @@ jobs:
       - name: Serves a page, is healthy, carries its baseline
         run: |
           set -e
-          docker run --rm qbix-test:$TAG cat /usr/share/qbix-webserver/image-extensions.txt
+          docker run --rm qbix-test:$TAG cat /usr/share/exponential-velocity/image-extensions.txt
           docker run --rm qbix-test:$TAG qbixctl ext:check --variant='${{ matrix.variant }}'
           cid=$(docker run -d -p 18080:8080 qbix-test:$TAG)
           for i in $(seq 1 20); do
@@ -118,7 +118,7 @@ jobs:
           done
           docker logs "$cid" | tail -20
           [ "$code" = 200 ] || { echo "::error::/Q/health answered $code"; exit 1; }
-          docker exec "$cid" php /usr/share/qbix-webserver/packaging/docker/healthcheck.php
+          docker exec "$cid" php /usr/share/exponential-velocity/packaging/docker/healthcheck.php
           docker rm -f "$cid" >/dev/null
           docker image ls qbix-test:$TAG
 

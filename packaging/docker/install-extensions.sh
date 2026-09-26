@@ -9,13 +9,13 @@
 # The server, required and recommended tiers must all install: a failure
 # there fails the build. An extension of the extra tier (the full image) that
 # does not build on this PHP is left out and recorded, with the reason, in
-# /usr/share/qbix-webserver/image-extensions.txt -- the image's own list of
+# /usr/share/exponential-velocity/image-extensions.txt -- the image's own list of
 # its exceptions, which `docker run ... cat` shows.
 set -euo pipefail
 variant="${1:?variant}"
 addons="${2:-1}"
 here="$(cd "$(dirname "$0")" && pwd)"
-report=/usr/share/qbix-webserver/image-extensions.txt
+report=/usr/share/exponential-velocity/image-extensions.txt
 jobs="$(nproc)"
 export DEBIAN_FRONTEND=noninteractive
 

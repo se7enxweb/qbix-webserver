@@ -1,10 +1,10 @@
-# Settings for the qbix-webserver service (systemd reads this file).
+# Settings for the exponential-velocity service (systemd reads this file).
 #
 # QBIX_ROOT  the document root to serve. The bundled welcome page until you
 #            point it at your application's public directory.
 # QBIX_SITE  the site file (docs/layout.md): the enabled default site, whose
 #            settings sit on top of /etc/qbix/qbix.conf and ports.conf.
 # QBIX_OPTS  any other qbixserver options, e.g. --workers=16 --https-port=8443
-QBIX_ROOT=/usr/share/qbix-webserver/web
+QBIX_ROOT=/usr/share/exponential-velocity/web
 QBIX_SITE=/etc/qbix/sites-enabled/default.conf
 QBIX_OPTS=

@@ -25,6 +25,12 @@ ghcr.io/se7enxweb/exponential-velocity:php<version>-<variant>             moves 
 ghcr.io/se7enxweb/exponential-velocity:latest                             newest PHP, standard variant
 ```
 
+The images were published as `ghcr.io/se7enxweb/qbix-webserver` until the
+repository was renamed. Those tags stay where they are but get no new ones:
+change the image name to `ghcr.io/se7enxweb/exponential-velocity` and keep the
+same tag. Inside the image the server now lives in `/usr/share/exponential-velocity`,
+and `/usr/share/qbix-webserver` is a link to it.
+
 `<version>` is 8.2, 8.3, 8.4 or 8.5; `<variant>` is `mini`, `lite`, `standard` or
 `full` ([binaries.md](binaries.md#variants-which-binary-to-download)). Every tag is
 multi-architecture: Docker pulls the `amd64` or `arm64` image to match the host.
@@ -73,7 +79,7 @@ one. Two things follow from that:
 
 ```bash
 docker run --rm ghcr.io/se7enxweb/exponential-velocity:php8.3-full \
-  cat /usr/share/qbix-webserver/image-extensions.txt
+  cat /usr/share/exponential-velocity/image-extensions.txt
 ```
 
 The server, required and recommended tiers are never best effort: an image that
@@ -161,7 +167,7 @@ repository's root:
 ```bash
 docker build -f packaging/docker/Dockerfile \
   --build-arg PHP_VERSION=8.3 --build-arg VARIANT=standard \
-  -t my/qbix-webserver:php8.3-standard .
+  -t my/exponential-velocity:php8.3-standard .
 ```
 
 | Build argument | Default | Meaning |

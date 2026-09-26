@@ -26,9 +26,9 @@ for distro in "$@"; do
   spec="dist/nfpm-$distro.yaml"
   php packaging/nfpm/render.php "$distro" "$version" > "$spec"
   if [ "$format" = deb ]; then
-    out="dist/qbix-webserver_${version}-1+${suffix}_all.deb"
+    out="dist/exponential-velocity_${version}-1+${suffix}_all.deb"
   else
-    out="dist/qbix-webserver-${version}-1.${suffix}.noarch.rpm"
+    out="dist/exponential-velocity-${version}-1.${suffix}.noarch.rpm"
   fi
   nfpm_run pkg --config "$spec" --packager "$format" --target "$out"
   rm -f "$spec"

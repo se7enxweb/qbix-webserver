@@ -46,7 +46,7 @@ class Q_WebServer_Acme_Client
 		$this->accountKey = openssl_pkey_get_private($accountKeyPem);
 		if (!$this->accountKey) throw new Exception('the ACME account key could not be read');
 		$this->options = $options + array('verify' => true, 'timeout' => 30, 'caBundle' => null,
-			'userAgent' => 'qbix-webserver-acme/1 (+RFC 8555)');
+			'userAgent' => 'exponential-velocity-acme/1 (+RFC 8555)');
 	}
 
 	/**

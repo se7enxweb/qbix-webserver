@@ -60,8 +60,8 @@ qbixserver-<platform>-php<version>-<variant>[.exe]   the server, one file
 php-<platform>-php<version>-<variant>[.exe]          the same PHP, as a plain interpreter
 qbixserver-windows-x64-php<version>-<variant>-gui.exe  Windows, no console window
 qbixserver-source-kit-<release>.tar.gz               the source kit
-qbix-webserver_<release>-1+<distro>_all.deb          OS packages (packages.md)
-qbix-webserver-<release>-1.<distro>.noarch.rpm
+exponential-velocity_<release>-1+<distro>_all.deb          OS packages (packages.md)
+exponential-velocity-<release>-1.<distro>.noarch.rpm
 SHA256SUMS                                           checksums of every file above
 ```
 
