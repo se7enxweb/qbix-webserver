@@ -116,16 +116,63 @@ image ([docker.md](docker.md)) or the OS packages ([packages.md](packages.md)).
 ### Known platform limitations
 
 - **omnios / illumos (SunOS):** the phar builds and boots — the server binds
-  and prints that it is listening — but a request over loopback comes back with
-  an empty body, so the serve check fails there. It is almost certainly the
-  `pcntl_fork` worker plus `stream_select` accept path behaving differently on
-  illumos than on Linux and the BSDs. The `Platforms` workflow runs omnios and
-  shows its result, but marks it experimental so it does not fail the run (the
-  same treatment as Haiku); the workflow does not gate releases in any case.
+  and prints that it is listening — but the serve check fails: a request over
+  loopback is accepted at the kernel (curl reports the connection established)
+  yet the server returns nothing and curl times out (exit 28, HTTP 000, 0 bytes)
+  after ten seconds. It fails for a static file exactly as for a `.php`, and no
+  access-log line is ever written, so the request is never serviced at all. The
+  `Platforms` workflow runs omnios and shows this, but marks it experimental so
+  it does not fail the run (the same treatment as Haiku); the workflow does not
+  gate releases in any case.
+
+  This was narrowed on the CI VM over several rounds; the cause is not yet
+  fully isolated and no fix has landed, so what is known is recorded here for
+  whoever next has an illumos host to work on.
+
+  What is established:
+
+  - **It is not the worker pool.** A static file, served entirely by the parent
+    with no worker involved, returns 0 bytes just like a pooled `.php`. Making
+    the parent↔worker channel a loopback TCP pair instead of an AF_UNIX
+    `stream_socket_pair` changed nothing, as expected once static was ruled out.
+    `--workers=1` and `--workers=2` behave identically.
+  - **`stream_select()` never reports readiness.** With the accept path traced,
+    `stream_select()` returned `0` on every call while a connection was pending
+    and had been accepted by the kernel, even as the loop's own timers kept
+    firing. So the readable callback (`onAccept`) was never invoked, and in the
+    default event-loop mode nothing is ever accepted.
+  - **`stream_socket_accept()` does not help by itself.** Bypassing the select
+    and polling the callbacks directly (so `onAccept` runs every tick) made
+    `stream_socket_accept($listener, 0)` return `false` every time — it selects
+    for readability internally before it calls `accept()`, and that inner select
+    is the same one that does not work here. Accepting instead through the
+    sockets extension (`socket_import_stream()` + `socket_accept()`) on the
+    server's listener returned `false` every time too.
+  - **Yet every accept mechanism works in isolation on the same host.** A
+    standalone probe on the omnios VM — a listener plus a forked client that
+    connects — accepted the connection with all of: `stream_socket_accept()`
+    (non-blocking, polled), `socket_import_stream()` + `socket_accept()`, a
+    native `socket_create()` listener with `socket_select()`, the same native
+    listener polled with `socket_accept()`, and `socket_import_stream()` +
+    `socket_select()`. Notably `socket_select()` (the sockets extension) works
+    where `stream_select()` does not.
+
+  So the accept primitives themselves are fine on illumos; the failure is
+  specific to how the **server** sets up and accepts on its listener, and the
+  isolated probe differs from the server in exactly three ways, one of which is
+  the real cause: the server binds `0.0.0.0` (the probe bound `127.0.0.1`); the
+  server passes a `backlog` socket-context option to `stream_socket_server()`
+  (the probe used the default); and the server pre-forks its workers, which
+  inherit the listener fd, before it begins accepting (the probe did neither).
+  Each is a one-line change to test, but bisecting them needs a shell on an
+  illumos host to iterate against, which the CI VM does not provide. A promising
+  fix, once the cause is confirmed, is to drive the event loop with
+  `socket_select()` (which works here) rather than `stream_select()` on illumos,
+  or to accept through a native `socket_create()` listener.
+
   `tests/phar-serves.sh` prints fetch diagnostics on failure (the client used,
   its exit status, and the connection headers over both `127.0.0.1` and
-  `localhost`) so the cause can be narrowed. A proper fix needs an illumos host
-  to iterate on, which the CI VM does not give a shell into.
+  `localhost`) so the symptom stays visible on every run.
 
 ## Creating a Binary
 
