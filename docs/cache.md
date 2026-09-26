@@ -182,7 +182,19 @@ Every setting, with its default. All are under `Q.web.cache`.
 | `Age` | Seconds since the entry was stored, on every cached answer. |
 | `ETag` | On every stored page; the application's own when it sent one. |
 
-`/Q/health` reports hits, misses and the hit rate under `cache`. See [headers.md](headers.md) for
+`/Q/health` reports the cache under `cache`, read at most once a second:
+
+| Key | Meaning |
+|---|---|
+| `hits`, `misses`, `hitRate` | Since the server started. |
+| `stale` | Hits answered with an expired copy while it was rendered again. |
+| `hitsFrom.index` | Conditional requests answered `304` from the validator index, without the page. |
+| `hitsFrom.apcu`, `hitsFrom.disk` | Where the other hits were read from. Mostly `disk` with APCu enabled means it is not doing its part. |
+| `apcu.enabled` | Whether APCu is in use, after the checks under [Where it is kept](#where-it-is-kept). |
+| `apcu.warnings` | What those checks found, as said at startup. |
+| `apcu.storeFailures` | Stores APCu refused: a full segment, or APCu unusable. |
+| `apcu.memory` | `size`, `available` (bytes) and `usedPercent` of the shared segment. Only while APCu is in use. |
+| `apcu.entries`, `apcu.expunges` | Entries held, and times APCu emptied a full segment. Only while APCu is in use. | See [headers.md](headers.md) for
 what your PHP can send to steer caching.
 
 The opcode cache, caches written during a fault, and other lessons: [lessons.md](lessons.md), [time-consuming-lessons.md](time-consuming-lessons.md).

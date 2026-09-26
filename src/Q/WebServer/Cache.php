@@ -56,6 +56,9 @@ class Q_WebServer_Cache
 	static $hits = 0;
 	static $misses = 0;
 
+	/** @var array hits by where they were answered from: a 304 off the validator index, APCu, disk */
+	static $hitsFrom = array('index' => 0, 'apcu' => 0, 'disk' => 0);
+
 	/** @var int apcu_store() calls that failed: a full segment, or APCu unusable */
 	static $apcuStoreFailures = 0;
 
@@ -502,6 +505,7 @@ class Q_WebServer_Cache
 		$fresh = self::notModifiedFromIndex($parsed, $key);
 		if ($fresh !== null) {
 			self::$hits++;
+			self::$hitsFrom['index']++;
 			return $fresh;
 		}
 
@@ -540,6 +544,7 @@ class Q_WebServer_Cache
 		$expires = isset($entry['expires']) ? $entry['expires'] : 0;
 		if ($expires === 0 or $expires > time()) {
 			self::$hits++;
+			self::$hitsFrom[$fromApcu ? 'apcu' : 'disk']++;
 			$entry['headers']['X-Cache'] = 'HIT';
 			$entry['headers']['Age'] = self::age($entry);
 			if (!$fromApcu and self::$apcuEnabled
@@ -557,6 +562,7 @@ class Q_WebServer_Cache
 			if (!self::claimRevalidation($key)) {
 				// Someone else is rendering. This one gets the old page now.
 				self::$hits++;
+				self::$hitsFrom[$fromApcu ? 'apcu' : 'disk']++;
 				self::$stale++;
 				$entry['headers']['X-Cache'] = 'STALE';
 				$entry['headers']['Age'] = self::age($entry);
@@ -1572,15 +1578,46 @@ class Q_WebServer_Cache
 	}
 
 	/**
-	 * Stats for the dashboard.
+	 * Stats for the dashboard and /Q/health.
+	 *
+	 * hits, misses and hitRate as always; then where the hits came from, so a
+	 * cache that has quietly fallen back to disk shows it, and what APCu itself
+	 * says about its segment. Read at most once a second (the stats throttle),
+	 * so the two APCu calls cost nothing that matters.
 	 */
 	static function stats()
 	{
 		$total = self::$hits + self::$misses;
-		return array(
+		$out = array(
 			'hits' => self::$hits,
 			'misses' => self::$misses,
 			'hitRate' => $total > 0 ? round(self::$hits / $total * 100, 1) : 0,
+			'stale' => self::$stale,
+			'hitsFrom' => self::$hitsFrom,
+			'apcu' => array(
+				'enabled' => self::$apcuEnabled,
+				'maxSize' => self::$apcuMaxSize,
+				'storeFailures' => self::$apcuStoreFailures,
+				'warnings' => self::$apcuWarnings,
+			),
 		);
+		if (self::$apcuEnabled and function_exists('apcu_sma_info')) {
+			$sma = @apcu_sma_info(true);
+			if (is_array($sma)) {
+				$size = (int) ($sma['num_seg'] ?? 1) * (int) ($sma['seg_size'] ?? 0);
+				$avail = (int) ($sma['avail_mem'] ?? 0);
+				$out['apcu']['memory'] = array(
+					'size' => $size,
+					'available' => $avail,
+					'usedPercent' => $size > 0 ? round(($size - $avail) / $size * 100, 1) : 0,
+				);
+			}
+			$info = @apcu_cache_info(true);
+			if (is_array($info)) {
+				$out['apcu']['entries'] = (int) ($info['num_entries'] ?? 0);
+				$out['apcu']['expunges'] = (int) ($info['expunges'] ?? 0);
+			}
+		}
+		return $out;
 	}
 }
