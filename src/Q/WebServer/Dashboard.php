@@ -377,6 +377,10 @@ class Q_WebServer_Dashboard
 			$swapFree = ($info['SwapFree'] ?? 0) / 1024;
 			$swapUsed = max(0, $swapTotal - $swapFree);
 			return array(
+				// How fast pages are coming back from swap, which is what
+				// actually slows a server. Swap merely in use is usually cold
+				// pages moved out long ago; they cost nothing while they stay.
+				'swapInKBps' => self::swapInRate(),
 				'totalMb' => round($total),
 				'usedMb' => round($used),
 				'availableMb' => round($available),
@@ -499,15 +503,68 @@ class Q_WebServer_Dashboard
 		return 'ok';
 	}
 
+	/** @var array|null [microtime, pswpin] at the previous sample */
+	private static $swapInSample = null;
+
 	/**
-	 * Severity of swap: 'none' when nothing is swapped, 'warn' when any is,
-	 * 'crit' when more than half of a known swap total is in use.
+	 * KB per second read back from swap since the previous call, from
+	 * pswpin in /proc/vmstat (pages of 4 KB). Null on the first call and
+	 * where there is no /proc/vmstat: a rate needs two samples.
 	 */
-	static function swapLevel($usedMb, $totalMb = 0) {
+	static function swapInRate() {
+		$vm = @file_get_contents('/proc/vmstat');
+		if ($vm === false or !preg_match('/^pswpin (\d+)$/m', $vm, $m)) return null;
+		$now = microtime(true); $pages = (int) $m[1];
+		$prev = self::$swapInSample;
+		self::$swapInSample = array($now, $pages);
+		if ($prev === null or $now - $prev[0] < 0.5) return null;
+		return (int) round(max(0, $pages - $prev[1]) * 4 / ($now - $prev[0]));
+	}
+
+	/**
+	 * Severity of swap, by what hurts rather than by how much is parked:
+	 *   'crit'  pages coming back at 10 MB/s or more: the server is waiting on disk
+	 *   'warn'  1 MB/s or more coming back, or swap 90% full (nowhere left to go)
+	 *   'none'  otherwise -- swap in use but idle is cold pages, and costs nothing
+	 * Without a rate (first sample, or no /proc/vmstat) only fullness counts.
+	 */
+	static function swapLevel($usedMb, $totalMb = 0, $inKBps = null) {
 		$usedMb = (float) $usedMb; $totalMb = (float) $totalMb;
 		if ($usedMb <= 0) return 'none';
-		if ($totalMb > 0 and $usedMb > $totalMb / 2) return 'crit';
-		return 'warn';
+		if ($inKBps !== null and $inKBps >= 10240) return 'crit';
+		if ($inKBps !== null and $inKBps >= 1024) return 'warn';
+		if ($totalMb > 0 and $usedMb >= $totalMb * 0.9) return 'warn';
+		return 'none';
+	}
+
+	/** "300 KB/s" below 1 MB/s, else "1.2 MB/s". */
+	static function fmtRate($kbps) {
+		$kbps = (float) $kbps;
+		return $kbps < 1024 ? ((int) round($kbps)) . ' KB/s' : self::num1($kbps / 1024) . ' MB/s';
+	}
+
+	/** "300 MB" below 1 GB, else "8.7 GB". */
+	static function fmtSwapMb($mb) {
+		$mb = (float) $mb;
+		return ($mb > 0 and $mb < 1024) ? ((int) round($mb)) . ' MB' : self::num1($mb / 1024) . ' GB';
+	}
+
+	/** The swap part's tooltip: what the figure means, in plain words. */
+	static function swapTitle($usedMb, $totalMb = 0, $inKBps = null) {
+		$level = self::swapLevel($usedMb, $totalMb, $inKBps);
+		$rate = $inKBps === null ? '' : ' (now ' . self::fmtRate($inKBps) . ')';
+		if ((float) $usedMb <= 0) return 'Nothing is in swap.';
+		if ($level === 'crit' or ($level === 'warn' and $inKBps !== null and $inKBps >= 1024)) {
+			return 'Pages are being read back from swap at ' . self::fmtRate($inKBps)
+				. ': the server is short of memory and slows down while it waits on disk.';
+		}
+		if ($level === 'warn') {
+			return 'Swap is nearly full: if memory runs short now, the kernel has nowhere'
+				. ' left to move pages and may stop processes.';
+		}
+		return 'Memory the kernel moved out earlier and has not needed back. It costs'
+			. ' nothing while it stays there; it only slows the server when pages are'
+			. ' read back in' . $rate . '.';
 	}
 
 	/** One decimal, trailing ".0" dropped, as JavaScript prints a number. */
@@ -522,19 +579,23 @@ class Q_WebServer_Dashboard
 	}
 
 	/**
-	 * "18.5 / 46.8 GB · 4.7 GB swap", with the swap part in its own span so
-	 * it takes its severity colour. Swap is shown whenever the host reports
-	 * any (Linux); a platform that sends no swap figures gets no swap part.
-	 * Mirrors ramDetail() in the page script.
+	 * "18.5 / 46.8 GB · swap 4.7 / 12 GB", and ", 1.2 MB/s in" while pages
+	 * are coming back, with the swap part in its own span so it takes its
+	 * severity colour and carries a tooltip saying what it means. Swap is
+	 * shown whenever the host reports any (Linux); a platform that sends no
+	 * swap figures gets no swap part. Mirrors ramDetail() in the page script.
 	 */
 	static function ramDetailHtml($ram) {
 		$out = self::num1(($ram['usedMb'] ?? 0) / 1024) . ' / '
 			. self::num1(($ram['totalMb'] ?? 0) / 1024) . ' GB';
 		$swTotal = (float) ($ram['swapTotalMb'] ?? 0);
 		$sw = (float) ($ram['swapUsedMb'] ?? 0);
+		$in = isset($ram['swapInKBps']) ? (float) $ram['swapInKBps'] : null;
 		if ($swTotal > 0 or $sw > 0) {
-			$amt = ($sw > 0 and $sw < 1024) ? ((int) round($sw)) . ' MB' : self::num1($sw / 1024) . ' GB';
-			$out .= ' &#183; <span class="sev-' . self::swapLevel($sw, $swTotal) . '">' . $amt . ' swap</span>';
+			$amt = 'swap ' . self::fmtSwapMb($sw) . ($swTotal > 0 ? ' / ' . self::fmtSwapMb($swTotal) : '');
+			if ($in !== null and $in >= 1024) $amt .= ', ' . self::fmtRate($in) . ' in';
+			$out .= ' &#183; <span class="sev-' . self::swapLevel($sw, $swTotal, $in)
+				. '" title="' . self::swapTitle($sw, $swTotal, $in) . '">' . $amt . '</span>';
 		}
 		return $out;
 	}
