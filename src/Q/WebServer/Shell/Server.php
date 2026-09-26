@@ -491,7 +491,7 @@ class Q_WebServer_Shell_Server
 		foreach ($j['pipes'] as $p) if (is_resource($p)) @fclose($p);
 		$exit = proc_close($j['proc']);
 		if ($j['code'] === null) {
-			$j['code'] = ($st['signaled'] ?? false) ? 128 + (int) $st['termsig'] : ($st['exitcode'] >= 0 ? (int) $st['exitcode'] : ($exit >= 0 ? $exit : 1));
+			$j['code'] = self::exitCode($st, $exit, $j['pid']);
 		}
 		$j['state'] = 'done';
 		$ms = (int) round((microtime(true) - $j['started']) * 1000);
@@ -713,7 +713,7 @@ class Q_WebServer_Shell_Server
 			return;
 		}
 		$exit = proc_close($r['proc']);
-		$code = ($st['signaled'] ?? false) ? 128 + (int) $st['termsig'] : ($st['exitcode'] >= 0 ? (int) $st['exitcode'] : ($exit >= 0 ? $exit : 1));
+		$code = self::exitCode($st, $exit, $r['pid']);
 		$note = $r['phpErrors'] > 0
 			? $r['name'] . ' reported ' . $r['phpErrors'] . ' PHP warning(s); they are in the server\'s error log'
 			: null;
@@ -867,6 +867,20 @@ class Q_WebServer_Shell_Server
 	// ── What runners are told ───────────────────────────────────────────
 
 	/** The runner script: beside the server. */
+	/**
+	 * How a process opened here ended. The server's SIGCHLD handler reaps
+	 * every child it sees, and one it reaps first leaves proc_get_status()
+	 * and proc_close() with -1: its status is then the one the handler kept.
+	 */
+	private static function exitCode(array $st, $exit, $pid)
+	{
+		if ($st['signaled'] ?? false) return 128 + (int) $st['termsig'];
+		if ($st['exitcode'] >= 0) return (int) $st['exitcode'];
+		if ($exit >= 0) return (int) $exit;
+		$kept = class_exists('Q_WebServer', false) && method_exists('Q_WebServer', 'reapedExit') ? Q_WebServer::reapedExit((int) $pid) : null;
+		return $kept !== null ? $kept : 1;
+	}
+
 	/** What a job is told when this installation has no runner. */
 	const MISSING = 'the shell runner (qshell.php) is missing from this installation, so the shell cannot run commands here; reinstall the server (a source checkout, the phar and the binaries all carry it)';
 

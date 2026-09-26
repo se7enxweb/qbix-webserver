@@ -1446,7 +1446,7 @@ class Q_WebServer
 				while (($pid = Q_WebServer_Fork::waitpid(-1, $st, 1)) > 0) {
 					$info = Q_WebServer::$workerPids[$pid] ?? null;
 					unset(Q_WebServer::$workerPids[$pid]);
-					if (!$info) continue;
+					if (!$info) { Q_WebServer::noteReaped($pid, $st); continue; }
 
 					$startTime = is_array($info) ? $info['time'] : $info;
 					$ms = round((microtime(true) - $startTime) * 1000, 1);
@@ -6353,6 +6353,45 @@ WORKER;
 	}
 	/** @internal pid => start_time for request timeout enforcement */
 	static $workerPids = array();
+	/** @internal pid => exit code of children reaped here that were not workers */
+	static $reaped = array();
+
+	/**
+	 * Keep the exit status of a child the SIGCHLD handler reaped but did not
+	 * start (a process opened with proc_open, such as a shell job). Once it
+	 * is reaped here, proc_get_status() and proc_close() can no longer see
+	 * how it ended, so its owner asks reapedExit() instead.
+	 * @method noteReaped
+	 * @static
+	 * @param {integer} $pid
+	 * @param {integer} $status the raw status from waitpid()
+	 */
+	static function noteReaped($pid, $status)
+	{
+		if (!function_exists('pcntl_wifexited')) return;
+		$code = pcntl_wifexited($status) ? pcntl_wexitstatus($status)
+			: (pcntl_wifsignaled($status) ? 128 + pcntl_wtermsig($status) : 1);
+		self::$reaped[(int) $pid] = (int) $code;
+		// Bounded: an owner that never asks must not grow this for ever.
+		if (count(self::$reaped) > 512) self::$reaped = array_slice(self::$reaped, -256, null, true);
+	}
+
+	/**
+	 * The exit code of a child reaped by the SIGCHLD handler (and forget it),
+	 * or null when it was not reaped there.
+	 * @method reapedExit
+	 * @static
+	 * @param {integer} $pid
+	 * @return {integer|null}
+	 */
+	static function reapedExit($pid)
+	{
+		$pid = (int) $pid;
+		if (!isset(self::$reaped[$pid])) return null;
+		$code = self::$reaped[$pid];
+		unset(self::$reaped[$pid]);
+		return $code;
+	}
 	/** @var integer Max POST body size in bytes (from post_max_size ini) */
 	static $maxPostSize = 8388608; // 8M default
 	/** @var integer Max upload file size in bytes (from upload_max_filesize ini) */
