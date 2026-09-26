@@ -189,6 +189,14 @@ Nothing yet.
 - `ext:build` in the source kit rebuilt the phar from a tree without its
   designs.
 - The OpenBSD and NetBSD platform jobs, which had failed on every run.
+- **The `full` static binaries build again on every platform.** What
+  static-php-cli cannot build, or builds without registering, is left out per
+  platform with its reason: `rar` everywhere (its upstream branch is gone),
+  `gmssl` everywhere (built but never registered), `mysqlnd_ed25519` and
+  `mysqlnd_parsec` (shared only), `protobuf` (conflicts with `grpc`), `yac` on
+  arm64 (no atomic compare-and-swap it recognises) and on Windows (breaks
+  `redis`' igbinary detection), and on Windows also `xlswriter`, `ds` and `xz`.
+  `ext:plan --variant=full --platform=<platform>` lists them.
 
 ### Updated
 
@@ -205,6 +213,8 @@ Nothing yet.
 - Every command-line script starts with `#!/usr/bin/env` and is executable.
 - A newer push cancels the Docker and platform runs still queued for an older
   commit on the same branch.
+- A failed static PHP build on Linux or macOS shows static-php-cli's own
+  compiler errors in the job, as the Windows build already did.
 - The documentation and help text match what the code does.
 
 ---

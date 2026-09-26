@@ -45,6 +45,21 @@ and PHP version; each release page lists the exact files.
 static-php-cli knows, and one that fails on a platform leaves that platform's
 `full` binary out of the release rather than holding back the other variants. The
 release's file list shows which were built.
+
+What `full` leaves out, because static-php-cli cannot build it there or builds it
+without registering it (checked in CI with PHP 8.3; `ext:plan` shows the current
+list with reasons):
+
+| Extension | Left out on | Why |
+|---|---|---|
+| `rar` | every platform | static-php-cli fetches it from an upstream branch that no longer exists |
+| `gmssl` | every platform | the library builds, but the extension is never registered (`php --ri gmssl` fails) |
+| `mysqlnd_ed25519`, `mysqlnd_parsec` | every platform | static-php-cli builds them only as shared extensions |
+| `protobuf` | every platform | conflicts with `grpc`, which `full` carries |
+| `yac` | linux-aarch64, macos-arm64 | finds no atomic compare-and-swap it recognises on arm64 |
+| `yac` | windows-x64 | its bundled igbinary breaks `redis`' igbinary detection |
+| `xlswriter`, `ds` | windows-x64 | static-php-cli's Windows patch or source path no longer matches |
+| `xz` | windows-x64 | the library builds, but the extension is never registered |
 To see exactly what a variant carries on a platform, and what it leaves out and
 why:
 

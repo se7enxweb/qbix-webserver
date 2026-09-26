@@ -272,7 +272,10 @@
             "purpose": "Efficient data structures",
             "source": "spc",
             "type": "pecl",
-            "spc": "ds"
+            "spc": "ds",
+            "unavailable": {
+                "windows-x64": "static-php-cli 2.8.5 builds it on Windows with a source path that no longer exists (nmake: don't know how to make ext\\ds\\src\\ds\\ds_deque.c)"
+            }
         },
         "enchant": {
             "tier": "other",
@@ -450,7 +453,13 @@
             "spc": "gmssl",
             "libs": [
                 "gmssl"
-            ]
+            ],
+            "unavailable": {
+                "linux-x86_64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1 on every platform), so static-php-cli's sanity check fails the whole build",
+                "linux-aarch64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1 on every platform), so static-php-cli's sanity check fails the whole build",
+                "macos-arm64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1 on every platform), so static-php-cli's sanity check fails the whole build",
+                "windows-x64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1 on every platform), so static-php-cli's sanity check fails the whole build"
+            }
         },
         "grpc": {
             "tier": "extra",
@@ -711,7 +720,13 @@
             "spc": "mysqlnd_ed25519",
             "libs": [
                 "libsodium"
-            ]
+            ],
+            "unavailable": {
+                "linux-x86_64": "static-php-cli builds it only as a shared extension; a static binary cannot load one",
+                "linux-aarch64": "static-php-cli builds it only as a shared extension; a static binary cannot load one",
+                "macos-arm64": "static-php-cli builds it only as a shared extension; a static binary cannot load one",
+                "windows-x64": "static-php-cli builds it only as a shared extension; a static binary cannot load one"
+            }
         },
         "mysqlnd_parsec": {
             "tier": "extra",
@@ -721,7 +736,13 @@
             "spc": "mysqlnd_parsec",
             "libs": [
                 "libsodium"
-            ]
+            ],
+            "unavailable": {
+                "linux-x86_64": "static-php-cli builds it only as a shared extension; a static binary cannot load one",
+                "linux-aarch64": "static-php-cli builds it only as a shared extension; a static binary cannot load one",
+                "macos-arm64": "static-php-cli builds it only as a shared extension; a static binary cannot load one",
+                "windows-x64": "static-php-cli builds it only as a shared extension; a static binary cannot load one"
+            }
         },
         "oci8": {
             "tier": "other",
@@ -971,7 +992,10 @@
             "type": "pecl",
             "spc": "protobuf",
             "unavailable": {
-                "windows-x64": "static-php-cli does not build it for Windows yet"
+                "windows-x64": "static-php-cli does not build it for Windows yet",
+                "linux-x86_64": "static-php-cli refuses protobuf and grpc in one build; the full binary carries grpc (protobuf's pure-PHP library needs no extension)",
+                "linux-aarch64": "static-php-cli refuses protobuf and grpc in one build; the full binary carries grpc (protobuf's pure-PHP library needs no extension)",
+                "macos-arm64": "static-php-cli refuses protobuf and grpc in one build; the full binary carries grpc (protobuf's pure-PHP library needs no extension)"
             }
         },
         "rar": {
@@ -979,7 +1003,13 @@
             "purpose": "RAR archives",
             "source": "spc",
             "type": "pecl",
-            "spc": "rar"
+            "spc": "rar",
+            "unavailable": {
+                "linux-x86_64": "static-php-cli 2.8.5 fetches it from the upstream branch issue-php82, which no longer exists",
+                "linux-aarch64": "static-php-cli 2.8.5 fetches it from the upstream branch issue-php82, which no longer exists",
+                "macos-arm64": "static-php-cli 2.8.5 fetches it from the upstream branch issue-php82, which no longer exists",
+                "windows-x64": "static-php-cli 2.8.5 fetches it from the upstream branch issue-php82, which no longer exists"
+            }
         },
         "rdkafka": {
             "tier": "extra",
@@ -1400,7 +1430,10 @@
             "purpose": "Writing Excel files",
             "source": "spc",
             "type": "pecl",
-            "spc": "xlswriter"
+            "spc": "xlswriter",
+            "unavailable": {
+                "windows-x64": "static-php-cli 2.8.5's Windows patch for it (spc_fix_xlswriter_win32.patch) no longer applies to the current source"
+            }
         },
         "xml": {
             "tier": "required",
@@ -1473,7 +1506,10 @@
             "spc": "xz",
             "libs": [
                 "xz"
-            ]
+            ],
+            "unavailable": {
+                "windows-x64": "On Windows, the xz library builds but the extension is never registered in php.exe (\"php --ri xz\" returns 1), so static-php-cli's sanity check fails the whole build"
+            }
         },
         "yac": {
             "tier": "extra",
@@ -1483,7 +1519,12 @@
             "spc": "yac",
             "libs": [
                 "fastlz"
-            ]
+            ],
+            "unavailable": {
+                "windows-x64": "On Windows, yac's bundled igbinary serializer breaks redis' igbinary detection (\"Cannot build redis; igbinary not enabled\"), and redis is in the standard set",
+                "linux-aarch64": "On arm64, yac's storage/yac_atomic.h finds no atomic compare-and-swap it recognises and stops the build (\"No atomic CAS support: per-slot locking is mandatory\")",
+                "macos-arm64": "On arm64, yac's storage/yac_atomic.h finds no atomic compare-and-swap it recognises and stops the build (\"No atomic CAS support: per-slot locking is mandatory\")"
+            }
         },
         "yaml": {
             "tier": "extra",

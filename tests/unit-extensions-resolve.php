@@ -140,5 +140,34 @@ check('...naming the artifact by platform, PHP and variant', strpos($out, 'qbixs
 list($out, $code) = $run('ext:build --variant=source --dry-run --out=/tmp/x');
 check('ext:build --variant=source lists the kit', array($code, strpos($out, 'qbixserver-source-kit.tar.gz') !== false, strpos($out, 'BUILD.md') !== false), array(0, true, true));
 
+
+// The full variant builds: nothing static-php-cli refuses reaches its list.
+// Each of these stopped a full build in CI (a vanished upstream branch,
+// shared-only extensions, a refused pair, a Windows configure clash).
+foreach (array('linux-x86_64', 'linux-aarch64', 'macos-arm64', 'windows-x64') as $p) {
+	$full = $X::resolve('full', $p, '8.3');
+	check("full on $p leaves out rar and the shared-only mysqlnd plugins, with reasons",
+		array_values(array_intersect(array('mysqlnd_ed25519', 'mysqlnd_parsec', 'rar'), array_keys($full['exclude']))),
+		array('mysqlnd_ed25519', 'mysqlnd_parsec', 'rar'));
+	check("...never carries both protobuf and grpc on $p",
+		in_array('protobuf', $full['include'], true) && in_array('grpc', $full['include'], true), false);
+	// redis is built with igbinary support, so igbinary must be in, and first.
+	$ig = array_search('igbinary', $full['include'], true);
+	$rd = array_search('redis', $full['include'], true);
+	check("...carries igbinary before redis on $p", $ig !== false && $rd !== false && $ig < $rd, true);
+}
+$fw = $X::resolve('full', 'windows-x64', '8.3');
+check('full on Windows leaves out yac, which breaks redis\' igbinary detection there', isset($fw['exclude']['yac']), true);
+check('...and xlswriter, whose Windows patch no longer applies', isset($fw['exclude']['xlswriter']), true);
+check('...and ds, whose Windows build points at a missing source file', isset($fw['exclude']['ds']), true);
+foreach (array('linux-x86_64', 'linux-aarch64', 'macos-arm64', 'windows-x64') as $p) {
+	check("full leaves out gmssl on $p: it builds but never registers in the static PHP", isset($X::resolve('full', $p, '8.3')['exclude']['gmssl']), true);
+}
+check('...and xz, which builds but never registers in php.exe there', isset($fw['exclude']['xz']), true);
+check('full on linux-aarch64 leaves out yac, which finds no atomic CAS there', isset($X::resolve('full', 'linux-aarch64', '8.3')['exclude']['yac']), true);
+check('...and so does full on macos-arm64', isset($X::resolve('full', 'macos-arm64', '8.3')['exclude']['yac']), true);
+check('...while linux-x86_64 keeps it', in_array('yac', $X::resolve('full', 'linux-x86_64', '8.3')['include'], true), true);
+check('a dynamic PHP is not held to the static exclusions (rar, on Linux)',
+	isset($X::resolve('full', 'linux-x86_64', '8.3', array(), false)['exclude']['rar']), false);
 if ($fail) { printf("  FAIL - %d of %d case(s)\n", $fail, $pass + $fail); exit(1); }
 printf("  PASS - %d case(s)\n", $pass);
