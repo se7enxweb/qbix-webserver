@@ -249,7 +249,7 @@ tickUp();
 var wsUrl=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/Q/ws{{tokenParam}}';
 var ws;function C(){ws=new WebSocket(wsUrl);
 ws.onopen=function(){wsLive=true;tickUp()};
-ws.onmessage=function(e){var m=JSON.parse(e.data);if(m.type==='request'){A(m.entry);U(m.stats)}else if(m.type==='heartbeat'){U(m.stats)}};
+ws.onmessage=function(e){var m=JSON.parse(e.data);if(m.type==='request'){A(m.entry);if(m.stats)U(m.stats)}else if(m.type==='heartbeat'){U(m.stats)}};
 ws.onclose=function(){wsLive=false;tickUp();setTimeout(C,2000)}}
 C();
 // Section tabs, as in the control panel: the one in view is marked.

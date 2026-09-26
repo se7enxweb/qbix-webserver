@@ -53,6 +53,12 @@ class Q_WebServer_Dashboard
 	static $sessions = array();  // sessionId => lastSeen timestamp (MRU order)
 	static $maxSessions = 20;    // configurable cap
 
+	/** Seconds between the stats sent along with live request entries. */
+	const STATS_INTERVAL = 1.0;
+
+	/** @var float when stats last went out with a request entry */
+	static $statsSentAt = 0.0;
+
 	static function recordRequest($method, $uri, $status, $ms, $bytes = 0,
 		$isPhp = false, $contentType = '', $memUsed = 0, $cookies = array())
 	{
@@ -117,11 +123,22 @@ class Q_WebServer_Dashboard
 		self::$recentRequests[] = $entry;
 		if (count(self::$recentRequests) > 200) array_shift(self::$recentRequests);
 
-		// Only build stats + broadcast if a dashboard client is connected
+		// Only broadcast if a dashboard client is connected -- and the stats
+		// at most once a second. getStats() is not cheap: every worker's
+		// /proc entry, the log directory listed, the caches counted. It used
+		// to go out with every request, so one open dashboard doubled the
+		// cost of serving a cached page (0.25 -> 0.48 ms of CPU, half the
+		// requests per second, 43 MB pushed to that one browser in 18 s),
+		// and the heartbeat below sends the same stats every two seconds
+		// anyway. Each request's entry still goes out as it happens.
 		if (!empty(Q_WebSocket::$channels['dashboard'])) {
-			Q_WebSocket::broadcastTo('dashboard', array(
-				'type' => 'request', 'entry' => $entry, 'stats' => self::getStats()
-			));
+			$message = array('type' => 'request', 'entry' => $entry);
+			$now = microtime(true);
+			if ($now - self::$statsSentAt >= self::STATS_INTERVAL) {
+				self::$statsSentAt = $now;
+				$message['stats'] = self::getStats();
+			}
+			Q_WebSocket::broadcastTo('dashboard', $message);
 		}
 	}
 
