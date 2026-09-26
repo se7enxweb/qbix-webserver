@@ -138,8 +138,10 @@ the same delay as the generation marker.
 
 What it saves depends on the size of the page. Measured on an 11-core host,
 server CPU per cached hit: about the same for a 3 KB gzipped page (~0.19 ms
-either way), about 12% less for a 44 KB one (0.23 → 0.20 ms). Worth turning on
-for large cached pages under heavy traffic; otherwise APCu alone is as fast. A scheduled sweep removes expired files every
+either way), about 12% less for a 44 KB one (0.23 → 0.20 ms) in most rounds --
+a gain close to the noise of a busy shared host. Worth trying for large cached
+pages under heavy traffic, measured on your own site; otherwise APCu alone is as
+fast. A scheduled sweep removes expired files every
 `sweep.every` seconds.
 
 ---

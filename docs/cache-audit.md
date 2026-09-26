@@ -308,4 +308,35 @@ Order of work if approved: 1, 2 (so everything after is measurable), 3, 4, 6,
 the full suite and this benchmark run again after each.
 
 ---
+
+### 10. Results
+
+All eight were implemented in that order, each with its own tests (seven new
+test files, 134 unit tests passing after each change) and a benchmark run after
+each. Every new test was checked to fail on the commit before its change.
+
+| # | Commit | Result |
+|---|---|---|
+| 1 | APCu only when `apcu_enabled()`, startup warnings, refused stores counted | The silent fallback to disk (C1) now names its fix at startup; C3 and C6 covered |
+| 2 | `/Q/health`: hits by source, APCu memory, entries, expunges, refused stores | C8 |
+| 3 | One entry per stored coding | C2: pages are no longer rendered and stored twice |
+| 4 | APCu keeps a page through the stale window | C5: stale answers from memory |
+| 6 | Static file cache evicts least recently used | S2; hit path cost unchanged (~4,000 req/s, ~2.5 µs CPU per request either way) |
+| 7 | `q=0` honoured, including precompressed files | S3 |
+| 8 | HEAD answered from the cache | A HEAD for a cached page no longer renders it |
+| 5 | Optional in-process layer (`memory.maxEntries`, off) | C4, C7: no change for 3 KB pages, ~12% less CPU per hit for 44 KB pages in most rounds |
+
+Final measurement, `ab`, concurrency 16, alternating rounds (load 8–9, so read
+ranges, not single values):
+
+| page | disk | APCu | APCu + memory |
+|---|---|---|---|
+| small | 3,389–3,653 req/s, 0.27–0.29 ms CPU | 4,545–4,763 req/s, 0.21–0.22 ms | 4,465–4,793 req/s, 0.21 ms |
+| large | 2,688–3,074 req/s, 0.33–0.37 ms | 3,926–4,043 req/s, 0.25 ms | 3,150–4,495 req/s, 0.22–0.27 ms |
+
+What remains on a hit is about 0.2 ms of server CPU spent outside the stores
+(request parsing, the key, the header block, the write); that is the next place
+to look.
+
+---
 [← Back to README](../README.md)
