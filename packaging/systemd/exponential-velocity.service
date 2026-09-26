@@ -1,6 +1,6 @@
 [Unit]
 Description=Exponential Velocity web server
-Documentation=https://github.com/se7enxweb/exponential-velocity/tree/maintain/docs
+Documentation=https://github.com/se7enxweb/exponential-velocity/tree/main/docs
 After=network-online.target
 Wants=network-online.target
 

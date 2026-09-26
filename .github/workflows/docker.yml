@@ -11,7 +11,7 @@ name: Docker images
 on:
   push:
     tags: ['v*']
-    branches: [maintain]
+    branches: [main]
     paths:
       - 'packaging/docker/**'
       - 'packaging/bin/**'

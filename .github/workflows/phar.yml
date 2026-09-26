@@ -15,7 +15,6 @@ name: phar
 on:
   push:
     branches:
-      - maintain
       - main
     paths:
       - 'src/**'
