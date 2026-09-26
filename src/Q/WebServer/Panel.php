@@ -321,6 +321,18 @@ class Q_WebServer_Panel
 				return self::apiChangePassword($parsed);
 			case 'auth/logout':
 				return self::apiLogout($parsed);
+			case 'auth/2fa':
+				return self::apiTwoFactor($parsed, 'verify');
+			case 'auth/2fa/status':
+				return self::apiTwoFactor($parsed, 'status');
+			case 'auth/2fa/begin':
+				return self::apiTwoFactor($parsed, 'begin');
+			case 'auth/2fa/confirm':
+				return self::apiTwoFactor($parsed, 'confirm');
+			case 'auth/2fa/disable':
+				return self::apiTwoFactor($parsed, 'disable');
+			case 'auth/2fa/recovery':
+				return self::apiTwoFactor($parsed, 'recovery');
 			case 'playground/run':
 				return self::apiPlaygroundRun($parsed);
 			case 'platform/install':
@@ -475,6 +487,33 @@ class Q_WebServer_Panel
 	private static function apiLogout($parsed)
 	{
 		list($status, $data) = Q_WebServer_Panel_Auth::logout($parsed);
+		return $data + array('status' => $status);
+	}
+
+	/**
+	 * The control panel's two-factor routes, all under /Q/api/auth/2fa. Each
+	 * has already passed the panel's sign-in and the observers (a session still
+	 * waiting on its second factor reaches only 'verify' and logout). The
+	 * secret and recovery codes appear only in the one-time begin/confirm/
+	 * recovery answers, to the authenticated admin who asked for them.
+	 * @method apiTwoFactor
+	 * @static
+	 * @param {array} $parsed
+	 * @param {string} $op verify|status|begin|confirm|disable|recovery
+	 * @return {array}
+	 */
+	private static function apiTwoFactor($parsed, $op)
+	{
+		$body = !empty($parsed['body']) ? (json_decode($parsed['body'], true) ?: array()) : array();
+		switch ($op) {
+			case 'verify': list($status, $data) = Q_WebServer_Panel_Auth::verifyTwoFactor($parsed, $body); break;
+			case 'status': list($status, $data) = Q_WebServer_Panel_Auth::twoFactorStatus($parsed); break;
+			case 'begin': list($status, $data) = Q_WebServer_Panel_Auth::twoFactorBegin($parsed); break;
+			case 'confirm': list($status, $data) = Q_WebServer_Panel_Auth::twoFactorConfirm($parsed, $body); break;
+			case 'disable': list($status, $data) = Q_WebServer_Panel_Auth::twoFactorDisable($parsed, $body); break;
+			case 'recovery': list($status, $data) = Q_WebServer_Panel_Auth::twoFactorRegenerateRecovery($parsed, $body); break;
+			default: return array('status' => 404, 'error' => 'Unknown endpoint');
+		}
 		return $data + array('status' => $status);
 	}
 
@@ -3129,6 +3168,7 @@ class Q_WebServer_Panel
 	{
 		$s = Q_WebServer_Panel_Auth::sessionFromRequest($parsed);
 		if ($s === null) return 'signin';
+		if (!empty($s['twoFactorPending'])) return '2fa';
 		return $s['mustChange'] ? 'mustchange' : 'panel';
 	}
 
@@ -3202,7 +3242,7 @@ class Q_WebServer_Panel
 		$page = Q_WebServer_Design::render('panel', array(
 			'brandHead' => Q_WebServer_Brand::headTags($brand . ' Control Panel', '/Q/panel'),
 			'brand'     => htmlspecialchars($brand, ENT_QUOTES, 'UTF-8'),
-			'authState' => in_array($authState, array('panel', 'mustchange', 'signin'), true) ? $authState : 'unknown',
+			'authState' => in_array($authState, array('panel', 'mustchange', 'signin', '2fa'), true) ? $authState : 'unknown',
 			'viewParams' => $viewParamsJson,
 		));
 		if ($page !== null and isset($viewParams['tab']) and is_string($viewParams['tab'])) {

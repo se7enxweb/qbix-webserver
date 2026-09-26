@@ -102,6 +102,7 @@ You can also package your entire app — code, assets, SQLite database — into 
 | 🗃️ | [Response Cache](docs/cache.md) | What is kept and for how long, the generation marker, every setting |
 | 🛡️ | [Security](docs/security.md) | What is refused and why: document-root containment, request framing, HTTP/2 frame validation, header injection |
 | 🔑 | [Panel Passwords](docs/passwords.md) | bcrypt storage, the password rules with examples, the default key and its forced change, lockout, `qbixctl panel:password` |
+| 🔐 | [Two-Factor Auth](docs/2fa.md) | Optional TOTP second factor for the panel (off by default): enrollment, recovery codes, the config flag, `qbixctl panel:2fa` |
 | 🌐 | [HTTP](docs/http.md) | Fork-per-request mode, request lifecycle |
 | 🔌 | [WebSocket & Rooms](docs/websocket.md) | Process per connection, rooms, Socket.IO, SSE, chat example |
 | 🛤️ | [Routing](docs/routing.md) | Clean URLs, .htaccess, DirectoryIndex |

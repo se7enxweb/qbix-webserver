@@ -67,7 +67,22 @@ edited down to what a reader actually needs.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- **Optional TOTP two-factor authentication for the control panel, off by
+  default.** With `Q.panel.twofactor` on and a device enrolled, panel sign-in
+  asks for a time-based code (RFC 6238, HMAC-SHA1, 6 digits, 30-second step,
+  ±1-step skew) after the password, with one-time recovery codes as a fallback.
+  The engine has no new dependency: the codes are computed with `hash_hmac`.
+  The secret and the recovery-code hashes live in the locked panel store beside
+  the password hash and never leave the machine except the one-time enrollment
+  views. A correct password gives only a pending session until a valid code
+  promotes it; a wrong or replayed code is refused and feeds the same lockout as
+  a wrong password. Enroll and manage it in the panel's Security tab or with
+  `qbixctl panel:2fa` (status/enroll/confirm/disable/recovery); the CLI's
+  `disable` is the local recovery path for a lost authenticator. When the flag
+  is off, sign-in is byte-for-byte as before, even with a device enrolled. See
+  [docs/2fa.md](docs/2fa.md).
 
 ---
 

@@ -59,6 +59,7 @@ class Q_WebServer_Panel_Events
 			self::attach(new Q_WebServer_Panel_LogObserver());
 			self::attach(new Q_WebServer_Panel_LockoutObserver());
 			self::attach(new Q_WebServer_Panel_DefaultPasswordObserver());
+			self::attach(new Q_WebServer_Panel_TwoFactorObserver());
 		}
 		$veto = null;
 		foreach (self::$observers as $o) {

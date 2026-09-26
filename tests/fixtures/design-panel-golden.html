@@ -322,6 +322,8 @@ body[data-auth="unknown"] .tabs,body[data-auth="unknown"] .content[id^="tab-"]{v
 <div id="tab-security" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">Security &amp; Attestation</h2>
 
+  <div id="sec-2fa"></div>
+
   <div id="sec-attestation"></div>
 
   <div class="card" style="margin-top:16px">
@@ -587,6 +589,10 @@ async function api(path, body) {
     showChangePassword(data.rules);
     throw new Error('must change');
   }
+  if (r.status === 403 && data.twoFactorRequired) {
+    show2FA();
+    throw new Error('2fa');
+  }
   if (data.error && (data.needsSetup || r.status === 401)) {
     showAuthScreen(data.needsSetup, data);
     throw new Error('auth');
@@ -686,6 +692,12 @@ async function doAuth(isSetup) {
     errEl.style.display = 'block';
     return;
   }
+  if (data.token && data.twoFactorRequired) {
+    // The password was right; the panel is not open until a code is given.
+    setToken(data.token);
+    show2FA();
+    return;
+  }
   if (data.token) {
     if (data.mustChange) { setToken(data.token); showChangePassword(data.rules); return; }
     setToken(data.token);
@@ -703,6 +715,90 @@ async function doAuth(isSetup) {
   }
 }
 
+// The second factor at sign-in: the password was accepted, but the session is
+// pending until a valid authenticator code (or a recovery code) is given. The
+// server has already set data-auth="2fa" and issued the pending token.
+function show2FA() {
+  setAuthState('2fa');
+  var main = document.getElementById('main-content');
+  var tabs = document.querySelector('.tabs');
+  if (!main && tabs) {
+    var els = [], sib = tabs.nextElementSibling;
+    while (sib) { if (sib.id !== 'auth-screen') els.push(sib); sib = sib.nextElementSibling; }
+    main = document.createElement('div');
+    main.id = 'main-content';
+    els.forEach(function (el) { main.appendChild(el); });
+    tabs.parentNode.insertBefore(main, tabs.nextSibling);
+  }
+  if (main) main.style.display = 'none';
+  if (tabs) tabs.style.display = 'none';
+  var old = document.getElementById('auth-screen');
+  if (old) old.remove();
+
+  var screen = document.createElement('div');
+  screen.id = 'auth-screen';
+  screen.className = 'content';
+  screen.style.maxWidth = '380px';
+  screen.style.margin = '40px auto';
+  screen._recovery = false;
+  screen.innerHTML = '<div class="card">'
+    + '<h2 style="font-size:14px;font-weight:700;color:var(--txt);margin-bottom:12px">Two-factor code</h2>'
+    + '<p id="tfa-hint" style="font-size:13px;color:var(--dim);margin-bottom:16px">Enter the 6-digit code from your authenticator app.</p>'
+    + '<div class="form-row"><label id="tfa-label">Code</label><input id="tfa-code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>'
+    + '<button class="btn btn-primary" id="tfa-go" style="width:100%">Verify</button>'
+    + '<div style="margin-top:10px"><a href="#" id="tfa-toggle" style="font-size:12px;color:var(--dim)">Use a recovery code instead</a></div>'
+    + '<div id="tfa-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div>'
+    + '</div>';
+  document.body.insertBefore(screen, tabs ? tabs.nextSibling : null);
+
+  document.getElementById('tfa-toggle').onclick = function (e) {
+    e.preventDefault();
+    screen._recovery = !screen._recovery;
+    document.getElementById('tfa-label').textContent = screen._recovery ? 'Recovery code' : 'Code';
+    document.getElementById('tfa-hint').textContent = screen._recovery
+      ? 'Enter one of the recovery codes you saved when you set up two-factor.'
+      : 'Enter the 6-digit code from your authenticator app.';
+    var input = document.getElementById('tfa-code');
+    input.placeholder = screen._recovery ? 'ABCDE-FGHIJ' : '123456';
+    input.value = '';
+    this.textContent = screen._recovery ? 'Use an authenticator code instead' : 'Use a recovery code instead';
+    input.focus();
+  };
+  document.getElementById('tfa-go').onclick = function () { submit2FA(screen); };
+  screen.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit2FA(screen); });
+  document.getElementById('tfa-code').focus();
+}
+
+async function submit2FA(screen) {
+  var val = document.getElementById('tfa-code').value.trim();
+  var err = document.getElementById('tfa-error');
+  err.style.display = 'none';
+  if (!val) return;
+  var body = screen._recovery ? {recovery: val} : {code: val};
+  var r = await fetch(API + '/auth/2fa', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Panel-Token': getToken() || ''},
+    body: JSON.stringify(body)
+  });
+  var data = await r.json();
+  if (!data.ok) {
+    err.textContent = (data.error || 'That code was not accepted.')
+      + (data.retryAfter ? ' Try again in ' + data.retryAfter + 's.' : '');
+    err.style.display = 'block';
+    return;
+  }
+  if (data.token) setToken(data.token);
+  var dest = safeNextDestination();
+  if (dest) { window.location.href = dest; return; }
+  setAuthState('panel');
+  screen.remove();
+  var tabs = document.querySelector('.tabs');
+  if (tabs) tabs.style.display = '';
+  var main = document.getElementById('main-content');
+  if (main) main.style.display = '';
+  initPanel();
+}
+
 async function checkAuthAndInit() {
   // The server has already looked at the session and opened the page on the
   // right view (body data-auth). Trust it: a signed-in visitor gets the panel
@@ -715,6 +811,10 @@ async function checkAuthAndInit() {
   }
   if (state === 'mustchange') {
     try { await api('system'); } catch (e) { /* api() showed the change form */ }
+    return;
+  }
+  if (state === '2fa') {
+    show2FA();
     return;
   }
   try {
@@ -1912,8 +2012,102 @@ async function loadSslHistory() {
   el.innerHTML = h + '<p style="font-size:11px;color:var(--dim);margin-top:6px">' + escH(r.total) + ' entries kept in <code>' + escH(r.file) + '</code></p>';
 }
 
+// ── Two-factor authentication ───────────────────────
+// Manage the panel's own second factor. The secret and the recovery codes are
+// shown once, here, when enrolling or regenerating; they are never stored in
+// the page or fetched again.
+async function load2FA() {
+  var el = document.getElementById('sec-2fa');
+  if (!el) return;
+  var s;
+  try { s = await api('auth/2fa/status'); } catch (e) { return; }
+  var h = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Two-Factor Authentication (TOTP)</h3>';
+  if (!s.configEnabled) {
+    h += '<p style="font-size:12px;color:var(--dim);margin-bottom:10px">Enforcement is off on this server (<code>Q.panel.twofactor</code>). '
+      + 'You can enroll a device now; sign-in will require it once an operator turns the flag on.</p>';
+  }
+  if (s.enabled) {
+    h += '<p style="font-size:13px;margin-bottom:10px"><b class="cert-ok" style="color:var(--green)">Enabled</b>'
+      + (s.configEnabled ? ' and enforced at sign-in.' : ' (enrolled; not yet enforced).')
+      + ' Recovery codes left: ' + escH(String(s.recoveryRemaining)) + '.</p>'
+      + '<div class="form-row"><label>Current code or password</label><input id="tfa-mgr-factor" placeholder="123456 or your password" type="password"></div>'
+      + '<div class="btn-row">'
+      + '<button class="btn btn-ghost" onclick="regen2FA()">New recovery codes</button>'
+      + '<button class="btn btn-ghost" onclick="disable2FA()">Turn off</button>'
+      + '</div>';
+  } else {
+    h += '<p style="font-size:12px;color:var(--dim);margin-bottom:10px">Add a time-based code from an authenticator app as a second factor.</p>'
+      + '<button class="btn btn-primary" onclick="begin2FA()">Set up two-factor</button>';
+  }
+  h += '<div id="tfa-mgr-out" style="margin-top:12px"></div><div id="tfa-mgr-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div></div>';
+  el.innerHTML = h;
+}
+
+function tfa2faErr(msg) {
+  var e = document.getElementById('tfa-mgr-error');
+  if (e) { e.textContent = msg; e.style.display = 'block'; }
+}
+
+function renderRecoveryCodes(codes) {
+  return '<div class="card" style="background:var(--panel2,#0000000d);margin-top:10px">'
+    + '<p style="font-size:12px;margin-bottom:8px"><b>Save these recovery codes now.</b> Each works once, and they are shown only this time.</p>'
+    + '<pre style="font-size:13px;line-height:1.8;font-family:monospace;margin:0">' + codes.map(escH).join('\n') + '</pre></div>';
+}
+
+async function begin2FA() {
+  var out = document.getElementById('tfa-mgr-out');
+  var r;
+  try { r = await api('auth/2fa/begin', {}); } catch (e) { return; }
+  if (!r.ok) { tfa2faErr(r.error || 'Could not start enrollment.'); return; }
+  out.innerHTML = '<div class="card" style="margin-top:10px">'
+    + '<p style="font-size:12px;margin-bottom:8px">Add this to your authenticator app, then enter a code to confirm.</p>'
+    + '<div style="font-size:12px;margin-bottom:6px"><b>Secret:</b> <code>' + escH(r.secret) + '</code></div>'
+    + '<div style="font-size:11px;color:var(--dim);word-break:break-all;margin-bottom:10px"><b>otpauth:</b> ' + escH(r.otpauth) + '</div>'
+    + '<div class="form-row"><label>Code from the app</label><input id="tfa-confirm-code" inputmode="numeric" placeholder="123456"></div>'
+    + '<button class="btn btn-primary" onclick="confirm2FA()">Confirm &amp; enable</button>'
+    + '</div>';
+  var i = document.getElementById('tfa-confirm-code');
+  if (i) i.focus();
+}
+
+async function confirm2FA() {
+  var code = (document.getElementById('tfa-confirm-code') || {}).value || '';
+  var r;
+  try { r = await api('auth/2fa/confirm', {code: code.trim()}); } catch (e) { return; }
+  if (!r.ok) { tfa2faErr(r.error || 'That code did not match.'); return; }
+  document.getElementById('tfa-mgr-out').innerHTML = renderRecoveryCodes(r.recovery || []);
+  // Refresh the card to the enabled state below the codes.
+  var codes = document.getElementById('tfa-mgr-out').innerHTML;
+  await load2FA();
+  document.getElementById('tfa-mgr-out').innerHTML = codes;
+}
+
+async function disable2FA() {
+  var factor = (document.getElementById('tfa-mgr-factor') || {}).value || '';
+  if (!factor.trim()) { tfa2faErr('Enter a current code or your password.'); return; }
+  var r;
+  try { r = await api('auth/2fa/disable', factor2body(factor.trim())); } catch (e) { return; }
+  if (!r.ok) { tfa2faErr(r.error || 'Could not turn two-factor off.'); return; }
+  load2FA();
+}
+
+async function regen2FA() {
+  var factor = (document.getElementById('tfa-mgr-factor') || {}).value || '';
+  if (!factor.trim()) { tfa2faErr('Enter a current code or your password.'); return; }
+  var r;
+  try { r = await api('auth/2fa/recovery', factor2body(factor.trim())); } catch (e) { return; }
+  if (!r.ok) { tfa2faErr(r.error || 'Could not make new codes.'); return; }
+  document.getElementById('tfa-mgr-out').innerHTML = renderRecoveryCodes(r.recovery || []);
+}
+
+// A management factor is a 6-digit code, else treated as the password.
+function factor2body(v) {
+  return /^\d{6}$/.test(v) ? {code: v} : {password: v};
+}
+
 // ── Security & Attestation ──────────────────────────
 async function loadSecurity() {
+  load2FA();
   var el = document.getElementById('sec-attestation');
   try {
     var r = await api('attestation');

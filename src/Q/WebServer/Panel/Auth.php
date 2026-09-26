@@ -286,7 +286,8 @@ class Q_WebServer_Panel_Auth
 		// storage) must not hide a live one in another: the first live one wins.
 		foreach ($candidates as $from => $token) {
 			if (self::sessionLive($token, $path)) {
-				return array('token' => $token, 'mustChange' => self::mustChange($token, $path), 'from' => $from);
+				return array('token' => $token, 'mustChange' => self::mustChange($token, $path),
+					'twoFactorPending' => self::twoFactorPending($token, $path), 'from' => $from);
 			}
 		}
 		return null;
@@ -345,12 +346,27 @@ class Q_WebServer_Panel_Auth
 	}
 
 	/**
-	 * A session good for everything: live, and not waiting to change the
-	 * default key. What the dashboard and the other admin pages accept.
+	 * Whether a session is still waiting on its second factor: a correct
+	 * password was given while two-factor is on, but no valid code yet. Such a
+	 * session may do nothing but present the code or sign out.
+	 */
+	static function twoFactorPending($token, $path = null)
+	{
+		if (!self::isStore($path)) return false;
+		$s = Q_WebServer_Panel_Store::sessionGet($token);
+		return $s !== null and !empty($s['twoFactorPending']);
+	}
+
+	/**
+	 * A session good for everything: live, not waiting to change the default
+	 * key, and not waiting on a second factor. What the dashboard and the
+	 * other admin pages accept.
 	 */
 	static function validateToken($token, $path = null)
 	{
-		return self::sessionLive($token, $path) && !self::mustChange($token, $path);
+		return self::sessionLive($token, $path)
+			&& !self::mustChange($token, $path)
+			&& !self::twoFactorPending($token, $path);
 	}
 
 	/** The panel API's check of a request's session. */
@@ -408,6 +424,13 @@ class Q_WebServer_Panel_Auth
 			return array(401, array('error' => 'Wrong password'));
 		}
 
+		// The password is right. When two-factor is on and a secret is
+		// enrolled, the session is not yet a way in: it is minted pending, and
+		// the request is told a code is still needed. The lockout record is
+		// left untouched (not cleared, as a full sign-in would), so the codes
+		// that follow are counted the same as password guesses.
+		$twoFactorPending = (!$usedDefault) && self::twoFactorActive();
+
 		$now = time();
 		$token = bin2hex(random_bytes(32));
 		if (self::isStore()) {
@@ -416,7 +439,7 @@ class Q_WebServer_Panel_Auth
 				$newHash = $config['passwordHash'];
 				Q_WebServer_Panel_Store::aclUpdate(function (array $c) use ($newHash) { $c['passwordHash'] = $newHash; return $c; });
 			}
-			if (!Q_WebServer_Panel_Store::sessionPut($token, $now + self::SESSION_SECONDS)) {
+			if (!Q_WebServer_Panel_Store::sessionPut($token, $now + self::SESSION_SECONDS, false, $twoFactorPending)) {
 				return self::lockedAnswer('cannot write the session file in ' . Q_WebServer_Panel_Store::dirs()['sessions']);
 			}
 			if (mt_rand(1, 20) === 1) Q_WebServer_Panel_Store::sessionsPrune();
@@ -426,6 +449,9 @@ class Q_WebServer_Panel_Auth
 			$sessions[$token] = $now + self::SESSION_SECONDS;
 			$config['sessions'] = $sessions;
 			self::save($config);
+		}
+		if ($twoFactorPending) {
+			return array(200, array('ok' => true, 'token' => $token, 'twoFactorRequired' => true));
 		}
 		Q_WebServer_Panel_Events::notify('login.succeeded', array('token' => $token, 'ip' => $ip, 'default' => $usedDefault));
 		return array(200, array('ok' => true, 'token' => $token, 'mustChange' => self::mustChange($token),
@@ -484,5 +510,255 @@ class Q_WebServer_Panel_Auth
 			self::save($config);
 		}
 		return array(200, array('ok' => true));
+	}
+
+	// ── Two-factor authentication ────────────────────────────────────────
+	//
+	// Off unless Q.panel.twofactor is true AND a secret has been enrolled and
+	// enabled in the store. When off, login() is exactly as it was: a correct
+	// password mints a full session. When on, a correct password mints a
+	// pending session (twoFactorPending above), and one of the routes below
+	// promotes it. The secret and the recovery codes live only in the locked
+	// store; nothing here returns them to a request except the one-time
+	// enrollment views (begin, confirm, recovery), to the authenticated admin
+	// who asked for them.
+
+	/** Whether the second factor is in force for the panel right now. */
+	static function twoFactorActive()
+	{
+		if (!self::isStore()) return false;
+		$on = class_exists('Q_Config', false) ? Q_Config::get('Q', 'panel', 'twofactor', false) : false;
+		if (!$on) return false;
+		return Q_WebServer_Panel_Store::twoFactorEnabled();
+	}
+
+	/** The skew allowed on a code, in 30-second steps (Q.panel.twofactorWindow, default 1). */
+	static function twoFactorWindow()
+	{
+		$w = class_exists('Q_Config', false) ? Q_Config::get('Q', 'panel', 'twofactorWindow', 1) : 1;
+		return max(0, min(10, is_numeric($w) ? (int) $w : 1));
+	}
+
+	/** The issuer an authenticator shows: the product's brand. */
+	static function twoFactorIssuer()
+	{
+		if (class_exists('Q_WebServer', false)) return Q_WebServer::brand();
+		return class_exists('Q_Config', false) ? Q_Config::get('Q', 'webserver', 'brand', 'Qbix Server') : 'Qbix Server';
+	}
+
+	/** The account label an authenticator shows: the host, or "panel". */
+	static function twoFactorLabel($parsed)
+	{
+		$host = is_array($parsed) ? (string) ($parsed['headers']['host'] ?? '') : '';
+		$host = preg_replace('/:\d+$/', '', $host);
+		return $host !== '' ? $host . ' panel' : 'panel';
+	}
+
+	/**
+	 * Whether the session token came in a header (Bearer or X-Panel-Token),
+	 * not the cookie alone. Every two-factor route requires this, so another
+	 * site cannot drive them from a signed-in visitor's browser (the cookie is
+	 * sent cross-site; the header is not).
+	 */
+	static function fromHeader($parsed)
+	{
+		$h = (array) ($parsed['headers'] ?? array());
+		return strpos((string) ($h['authorization'] ?? ''), 'Bearer ') === 0
+			|| (string) ($h['x-panel-token'] ?? '') !== '';
+	}
+
+	/** The refusal when a two-factor route is reached with the cookie alone. */
+	protected static function headerRequired()
+	{
+		return array(403, array('error' => 'Send the session token in an Authorization: Bearer or X-Panel-Token header.'));
+	}
+
+	/**
+	 * Whether a TOTP code is valid now, and, atomically, not already used: the
+	 * replay check and the record of the newest accepted step happen together
+	 * under the store's lock, so the same code cannot pass twice.
+	 */
+	protected static function verifyTotpCode($code)
+	{
+		$t = Q_WebServer_Panel_Store::twoFactorGet();
+		$secret = (string) ($t['secret'] ?? '');
+		if ($secret === '') return false;
+		$bytes = Q_WebServer_Panel_Totp::base32Decode($secret);
+		if ($bytes === '') return false;
+		$step = Q_WebServer_Panel_Totp::verify($bytes, $code, null, self::twoFactorWindow());
+		if ($step === false) return false;
+		$accepted = false;
+		Q_WebServer_Panel_Store::twoFactorUpdate(function (array $tt) use ($step, &$accepted) {
+			$last = (int) ($tt['lastStep'] ?? 0);
+			if ($step <= $last) { $accepted = false; return $tt; } // replay: no change
+			$tt['lastStep'] = $step;
+			$accepted = true;
+			return $tt;
+		});
+		return $accepted;
+	}
+
+	/**
+	 * Whether a recovery code is one of those enrolled, consuming it if so:
+	 * the match and the removal happen together under the lock, so a code
+	 * works exactly once even under concurrent tries.
+	 */
+	protected static function consumeRecoveryCode($presented)
+	{
+		if ((string) $presented === '') return false;
+		$hash = Q_WebServer_Panel_Totp::hashRecoveryCode($presented);
+		$consumed = false;
+		Q_WebServer_Panel_Store::twoFactorUpdate(function (array $tt) use ($hash, &$consumed) {
+			$codes = is_array($tt['recovery'] ?? null) ? $tt['recovery'] : array();
+			$keep = array();
+			foreach ($codes as $h) {
+				if (!$consumed and hash_equals((string) $h, $hash)) { $consumed = true; continue; }
+				$keep[] = $h;
+			}
+			$tt['recovery'] = array_values($keep);
+			return $tt;
+		});
+		return $consumed;
+	}
+
+	/** A valid current factor for a management action: a code, a recovery code, or the password. */
+	protected static function confirmFactor($parsed, array $body)
+	{
+		$code = (string) ($body['code'] ?? '');
+		if ($code !== '' and self::verifyTotpCode($code)) return true;
+		$recovery = (string) ($body['recovery'] ?? '');
+		if ($recovery !== '' and self::consumeRecoveryCode($recovery)) return true;
+		$password = (string) ($body['password'] ?? '');
+		if ($password !== '' and strlen($password) <= Q_WebServer_Panel_PasswordPolicy::MAX_BYTES) {
+			$config = self::load();
+			if (!empty($config['passwordHash'])) {
+				list($ok) = self::check($password, $config['passwordHash']);
+				if ($ok) return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * auth/2fa: the second factor at sign-in. The session must be one waiting
+	 * on it (minted pending by a correct password). A valid code or recovery
+	 * code promotes it to a full session; a wrong one is refused and counts
+	 * toward the same lockout as a password guess, and a replayed code fails.
+	 * @return {array} status, body
+	 */
+	static function verifyTwoFactor($parsed, array $body)
+	{
+		if (($problem = self::storageProblem()) !== null) return self::lockedAnswer($problem);
+		if (!self::fromHeader($parsed)) return self::headerRequired();
+		$token = self::requestToken($parsed);
+		$s = self::isStore() ? Q_WebServer_Panel_Store::sessionGet($token) : null;
+		if ($s === null or empty($s['twoFactorPending'])) {
+			return array(400, array('error' => 'No second factor is pending for this session.'));
+		}
+		$ip = (string) ($parsed['clientIp'] ?? $parsed['_remoteAddr'] ?? '');
+		$veto = Q_WebServer_Panel_Events::notify('login.attempt', array('ip' => $ip));
+		if ($veto) return array($veto['status'], $veto['body']);
+
+		$recovery = (string) ($body['recovery'] ?? '');
+		$code = (string) ($body['code'] ?? '');
+		$ok = $recovery !== '' ? self::consumeRecoveryCode($recovery)
+			: ($code !== '' ? self::verifyTotpCode($code) : false);
+		if (!$ok) {
+			Q_WebServer_Panel_Events::notify('login.failed', array('ip' => $ip, 'default' => false));
+			return array(401, array('error' => 'Invalid code'));
+		}
+		Q_WebServer_Panel_Store::sessionSetTwoFactorPending($token, false);
+		Q_WebServer_Panel_Events::notify('login.succeeded', array('token' => $token, 'ip' => $ip, 'default' => false));
+		return array(200, array('ok' => true, 'token' => $token, 'mustChange' => self::mustChange($token),
+			'rules' => Q_WebServer_Panel_PasswordPolicy::rules()));
+	}
+
+	/** auth/2fa/status: whether two-factor is configured, enrolled, pending. Never the secret. */
+	static function twoFactorStatus($parsed)
+	{
+		$store = self::isStore();
+		$t = $store ? Q_WebServer_Panel_Store::twoFactorGet() : array();
+		return array(200, array(
+			'configEnabled' => class_exists('Q_Config', false) ? (bool) Q_Config::get('Q', 'panel', 'twofactor', false) : false,
+			'enabled' => $store ? Q_WebServer_Panel_Store::twoFactorEnabled() : false,
+			'pending' => $store ? (Q_WebServer_Panel_Store::twoFactorPendingGet() !== '') : false,
+			'recoveryRemaining' => count(is_array($t['recovery'] ?? null) ? $t['recovery'] : array()),
+		));
+	}
+
+	/**
+	 * auth/2fa/begin: make a fresh secret, keep it pending (not yet a way in),
+	 * and return it with its otpauth:// URI so the admin can add it to an
+	 * authenticator. Shown once, to this authenticated admin only.
+	 */
+	static function twoFactorBegin($parsed)
+	{
+		if (($problem = self::storageProblem()) !== null) return self::lockedAnswer($problem);
+		if (!self::fromHeader($parsed)) return self::headerRequired();
+		$secret = Q_WebServer_Panel_Totp::generateSecret();
+		if (!Q_WebServer_Panel_Store::twoFactorPendingSet($secret)) {
+			return array(500, array('error' => 'Could not store the pending secret'));
+		}
+		$issuer = self::twoFactorIssuer();
+		$label = self::twoFactorLabel($parsed);
+		return array(200, array('ok' => true, 'secret' => $secret,
+			'otpauth' => Q_WebServer_Panel_Totp::provisioningUri($secret, $label, $issuer),
+			'issuer' => $issuer, 'label' => $label, 'digits' => 6, 'period' => 30, 'algorithm' => 'SHA1'));
+	}
+
+	/**
+	 * auth/2fa/confirm: prove the authenticator works with a code, then switch
+	 * two-factor on and issue the one-time recovery codes (shown once here).
+	 */
+	static function twoFactorConfirm($parsed, array $body)
+	{
+		if (($problem = self::storageProblem()) !== null) return self::lockedAnswer($problem);
+		if (!self::fromHeader($parsed)) return self::headerRequired();
+		$pending = Q_WebServer_Panel_Store::twoFactorPendingGet();
+		if ($pending === '') return array(400, array('error' => 'Begin enrollment first.'));
+		$bytes = Q_WebServer_Panel_Totp::base32Decode($pending);
+		$step = Q_WebServer_Panel_Totp::verify($bytes, (string) ($body['code'] ?? ''), null, self::twoFactorWindow());
+		if ($step === false) {
+			return array(400, array('error' => 'That code did not match. Check your device\'s clock and try again.'));
+		}
+		$rc = Q_WebServer_Panel_Totp::generateRecoveryCodes(10);
+		$ok = Q_WebServer_Panel_Store::twoFactorUpdate(function (array $tt) use ($pending, $rc, $step) {
+			// Enable, and record the confirming step so it cannot be replayed at sign-in.
+			return array('secret' => $pending, 'enabled' => true, 'recovery' => $rc['hashes'], 'lastStep' => $step);
+		});
+		if (!$ok) return array(500, array('error' => 'Could not enable two-factor'));
+		Q_WebServer_Panel_Store::twoFactorPendingClear();
+		return array(200, array('ok' => true, 'enabled' => true, 'recovery' => $rc['codes']));
+	}
+
+	/** auth/2fa/disable: turn two-factor off. Needs a current code, recovery code, or the password. */
+	static function twoFactorDisable($parsed, array $body)
+	{
+		if (($problem = self::storageProblem()) !== null) return self::lockedAnswer($problem);
+		if (!self::fromHeader($parsed)) return self::headerRequired();
+		if (!Q_WebServer_Panel_Store::twoFactorEnabled()) return array(200, array('ok' => true, 'enabled' => false));
+		if (!self::confirmFactor($parsed, $body)) {
+			return array(403, array('error' => 'Enter a current code, a recovery code, or your password to turn two-factor off.'));
+		}
+		Q_WebServer_Panel_Store::twoFactorClear();
+		return array(200, array('ok' => true, 'enabled' => false));
+	}
+
+	/** auth/2fa/recovery: replace the recovery codes with a fresh set (shown once). Needs a current factor. */
+	static function twoFactorRegenerateRecovery($parsed, array $body)
+	{
+		if (($problem = self::storageProblem()) !== null) return self::lockedAnswer($problem);
+		if (!self::fromHeader($parsed)) return self::headerRequired();
+		if (!Q_WebServer_Panel_Store::twoFactorEnabled()) return array(400, array('error' => 'Two-factor is not enabled.'));
+		if (!self::confirmFactor($parsed, $body)) {
+			return array(403, array('error' => 'Enter a current code or your password to get new recovery codes.'));
+		}
+		$rc = Q_WebServer_Panel_Totp::generateRecoveryCodes(10);
+		$ok = Q_WebServer_Panel_Store::twoFactorUpdate(function (array $tt) use ($rc) {
+			$tt['recovery'] = $rc['hashes'];
+			return $tt;
+		});
+		if (!$ok) return array(500, array('error' => 'Could not store the recovery codes'));
+		return array(200, array('ok' => true, 'recovery' => $rc['codes']));
 	}
 }

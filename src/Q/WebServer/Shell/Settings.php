@@ -40,6 +40,7 @@ class Q_WebServer_Shell_Settings
 		'shell.allowSystem' => array(array('Q', 'shell', 'allowSystem'), 'bool', 'restart', false, 'Raw OS commands in the advanced tier', true),
 		'shell.tier' => array(array('Q', 'shell', 'tier'), 'string', 'restart', 'advanced', 'The highest tier a shell session may use', true),
 		'panel.remote' => array(array('Q', 'panel', 'remote'), 'bool', 'restart', false, 'The control panel without a password from anywhere', true),
+		'panel.twofactor' => array(array('Q', 'panel', 'twofactor'), 'bool', 'restart', false, 'Require a second factor (TOTP) at panel sign-in, once one is enrolled', true),
 		'dashboard.remote' => array(array('Q', 'dashboard', 'remote'), 'bool', 'restart', false, 'The dashboard without a credential from anywhere', true),
 	);
 

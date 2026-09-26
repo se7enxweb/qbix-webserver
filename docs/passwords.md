@@ -142,5 +142,11 @@ prints it once. Either way the password is stored as a chosen one: the default k
 stops working, every existing session ends, and a running server uses it on the next
 request.
 
+### A second factor
+
+The panel can also require a **time-based one-time code** (TOTP) after the
+password. It is off by default and enforced only once enrolled and switched on
+with `Q.panel.twofactor`. See [2fa.md](2fa.md).
+
 ---
 [← Back to README](../README.md)

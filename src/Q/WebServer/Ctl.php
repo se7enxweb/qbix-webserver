@@ -783,6 +783,78 @@ class Q_WebServer_Ctl
 			'app' => 'The application directory, for a server run with --app',
 			'json' => array('Print the report as JSON', false),
 		));
+		$C::add('panel:2fa', 'Manage the control panel\'s two-factor authentication (status|enroll|confirm|disable|recovery)', function ($a, $o) {
+			self::context($o);
+			if (self::panelPasswordFile($o) === null) {
+				Q_Console::err('no such directory: ' . ($o['app'] ?? $o['root'] ?? getcwd() . '/web'));
+				return 1;
+			}
+			if (($problem = Q_WebServer_Panel_Store::problem()) !== null) {
+				Q_Console::err(Q_WebServer_Panel_Store::problemMessage($problem));
+				return 1;
+			}
+			$action = strtolower((string) ($a[0] ?? 'status'));
+			$T = 'Q_WebServer_Panel_Totp';
+			$S = 'Q_WebServer_Panel_Store';
+			$window = Q_WebServer_Panel_Auth::twoFactorWindow();
+			switch ($action) {
+				case 'status':
+					$t = $S::twoFactorGet();
+					Q_Console::out('  enabled          : ' . ($S::twoFactorEnabled() ? 'yes' : 'no'));
+					Q_Console::out('  pending secret   : ' . ($S::twoFactorPendingGet() !== '' ? 'yes (run: panel:2fa confirm --code=NNNNNN)' : 'no'));
+					Q_Console::out('  recovery codes   : ' . count(is_array($t['recovery'] ?? null) ? $t['recovery'] : array()) . ' left');
+					Q_Console::out('  config gate      : Q.panel.twofactor is ' . (Q_Config::get('Q', 'panel', 'twofactor', false) ? 'on' : 'off (2FA is not enforced until this is on)'));
+					return 0;
+				case 'enroll':
+					$secret = $T::generateSecret();
+					if (!$S::twoFactorPendingSet($secret)) { Q_Console::err('could not store the pending secret'); return 1; }
+					$issuer = Q_WebServer_Panel_Auth::twoFactorIssuer();
+					Q_Console::out('Add this secret to your authenticator app (shown once):');
+					Q_Console::out('  secret : ' . $secret);
+					Q_Console::out('  otpauth: ' . $T::provisioningUri($secret, 'panel', $issuer));
+					Q_Console::out('Then confirm with a code from the app:');
+					Q_Console::out('  qbixctl panel:2fa confirm --code=NNNNNN' . (isset($o['root']) ? ' --root=' . $o['root'] : ''));
+					return 0;
+				case 'confirm':
+					$pending = $S::twoFactorPendingGet();
+					if ($pending === '') { Q_Console::err('nothing to confirm; run: panel:2fa enroll'); return 1; }
+					$code = (string) ($o['code'] ?? '');
+					$step = $T::verify($T::base32Decode($pending), $code, null, $window);
+					if ($step === false) { Q_Console::err('that code did not match; check the device clock and try again'); return 1; }
+					$rc = $T::generateRecoveryCodes(10);
+					$ok = $S::twoFactorUpdate(function (array $tt) use ($pending, $rc, $step) {
+						return array('secret' => $pending, 'enabled' => true, 'recovery' => $rc['hashes'], 'lastStep' => $step);
+					});
+					if (!$ok) { Q_Console::err('could not enable two-factor'); return 1; }
+					$S::twoFactorPendingClear();
+					Q_Console::out('two-factor is now ON. Recovery codes (each works once, shown only now):');
+					foreach ($rc['codes'] as $c) Q_Console::out('  ' . $c);
+					Q_Console::out('Set Q.panel.twofactor on to enforce it at sign-in.');
+					return 0;
+				case 'disable':
+					// Local root recovery: no code required, since whoever runs
+					// this already has the store. This is the way back in for an
+					// admin who has lost their authenticator.
+					$S::twoFactorClear();
+					Q_Console::out('two-factor is now OFF; sign-in needs only the password again.');
+					return 0;
+				case 'recovery':
+					if (!$S::twoFactorEnabled()) { Q_Console::err('two-factor is not enabled'); return 1; }
+					$rc = $T::generateRecoveryCodes(10);
+					$ok = $S::twoFactorUpdate(function (array $tt) use ($rc) { $tt['recovery'] = $rc['hashes']; return $tt; });
+					if (!$ok) { Q_Console::err('could not store the recovery codes'); return 1; }
+					Q_Console::out('new recovery codes (each works once, the old set is void, shown only now):');
+					foreach ($rc['codes'] as $c) Q_Console::out('  ' . $c);
+					return 0;
+				default:
+					Q_Console::err('unknown action "' . $action . '"; use status, enroll, confirm, disable or recovery');
+					return 1;
+			}
+		}, self::$contextOptions + array(
+			'root' => 'The document root the server runs with (default: ./web)',
+			'app' => 'The application directory, for a server run with --app',
+			'code' => 'A code from the authenticator, for confirm',
+		), array(), '<status|enroll|confirm|disable|recovery>');
 		$C::add('cache:clear', 'Invalidate every page in the response cache', function ($a, $o) use ($say) {
 			self::context($o);
 			$dir = isset($o['cache-dir']) ? (string) $o['cache-dir'] : Q_Config::get('Q', 'web', 'cache', 'dir', null);
