@@ -1501,7 +1501,11 @@ class Q_WebServer_Cache
 	 */
 	static function storedCoding($acceptEncoding)
 	{
-		return strpos(strtolower((string) $acceptEncoding), 'gzip') !== false ? 'gzip' : '';
+		// The same reading of Accept-Encoding as everything else the server
+		// compresses: a coding refused with q=0 is refused. A substring test
+		// took "gzip;q=0" for a yes and sent gzip to a client that said no.
+		if (!class_exists('Q_WebServer_Headers', false)) require_once __DIR__ . '/Headers.php';
+		return Q_WebServer_Headers::acceptsCoding((string) $acceptEncoding, 'gzip') ? 'gzip' : '';
 	}
 
 	static function cacheKeyFromUrl($url)

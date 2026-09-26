@@ -89,6 +89,20 @@ check('br alongside gzip does not make a second entry',
 check('br without gzip shares the plain entry',
 	$C::cacheKey(request('/a', array('accept-encoding' => 'br'))),
 	$C::cacheKey(request('/a', array())));
+// q=0 is a refusal, not an offer.
+check('gzip;q=0 is not gzip', $C::storedCoding('gzip;q=0'), '');
+check('...and shares the plain entry',
+	$C::cacheKey(request('/a', array('accept-encoding' => 'gzip;q=0, br'))),
+	$C::cacheKey(request('/a', array())));
+check('br;q=0 alongside gzip is still gzip', $C::storedCoding('br;q=0, gzip'), 'gzip');
+check('"*" accepts gzip', $C::storedCoding('*'), 'gzip');
+check('"*" with gzip refused does not', $C::storedCoding('gzip;q=0, *'), '');
+$page = array('status' => 200, 'body' => str_repeat("<p>compressible</p>\n", 200),
+	'headers' => array('Content-Type' => 'text/html'));
+check('a client refusing gzip is stored the body as rendered',
+	isset($C::encodeBody($page, 'gzip;q=0')['headers']['Content-Encoding']), false);
+check('a client accepting it is stored gzip',
+	$C::encodeBody($page, 'gzip, br')['headers']['Content-Encoding'] ?? null, 'gzip');
 check('the key and the stored body agree on the coding',
 	array($C::storedCoding('gzip, deflate, br'), $C::storedCoding('br'), $C::storedCoding('')),
 	array('gzip', '', ''));

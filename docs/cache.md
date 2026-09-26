@@ -57,6 +57,8 @@ whose name begins with it, so `PHPSESSID` also covers a name with a suffix added
 The key is the host, the path, the query string and the coding the stored body is
 in: gzip for a client that accepts it, otherwise the body as rendered. A browser
 that also offers `br` shares the gzip entry, since gzip is what the cache stores.
+A coding refused with `q=0` (`gzip;q=0`) counts as not accepted, here and
+everywhere else the server compresses.
 Two query strings that differ only in order are two pages.
 
 A client's own `Cache-Control: no-cache` does not bypass the cache, so a visitor

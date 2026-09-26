@@ -4294,9 +4294,11 @@ WORKER;
 		// the entry so later gzip-capable clients got the uncompressed body --
 		// and in the reverse order a client that cannot decompress received
 		// gzipped bytes, which it has no way to read.
-		$aeRaw = strtolower($reqHeaders['accept-encoding'] ?? '');
-		$encKey = strpos($aeRaw, 'br') !== false ? 'br'
-			: (strpos($aeRaw, 'gzip') !== false ? 'gzip' : 'id');
+		// Read as findPreCompressed() and Precompress::serve() read it, so the
+		// key names the coding actually sent; q=0 refuses a coding.
+		$aeRaw = (string) ($reqHeaders['accept-encoding'] ?? '');
+		$encKey = Q_WebServer_Headers::acceptsCoding($aeRaw, 'br') ? 'br'
+			: (Q_WebServer_Headers::acceptsCoding($aeRaw, 'gzip') ? 'gzip' : 'id');
 		$cacheKey = $fsPath . '|' . $encKey;
 
 		// The domain's HSTS header is part of the stored response, so it is
