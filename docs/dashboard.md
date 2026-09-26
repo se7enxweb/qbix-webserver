@@ -455,6 +455,23 @@ prints each path with its owner and mode, whether it passes and why not, and the
 commands that fix it; it exits 1 when the panel is locked. `--json` gives the same
 as JSON.
 
+**The usual lock after an upgrade: a group-writable directory above the store.**
+Beside the application (no configuration tree), the store is `local/` in the
+application directory, so that directory and every one above it fall under the
+rule. A umask of `002` or a shared web group leaves them `0775`, and the panel is
+locked. The refusal, the start-up log and `panel:check` name that directory and the
+command, first:
+
+```
+chmod g-w,o-w /srv/www/app
+```
+
+Or keep the panel's files in a directory of their own, away from the application:
+set `Q.panel.aclDir` and `Q.panel.sessionsDir`, or start the server with
+`--conf-dir` (then they live in `<conf>/acl` and `<state>/sessions`). The rule
+itself is not relaxed: a directory others can write is one they can empty and fill
+with a password file of their own.
+
 **The panel's settings.** The folder of applications (`appsDir`), the autohost
 settings and the domain records live in `acl/panel.json` too, and every change to
 them -- from the panel, the API or an autohosted domain -- is made under the store's

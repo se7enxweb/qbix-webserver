@@ -256,11 +256,50 @@ class Q_WebServer_Panel_Store
 		return $problem;
 	}
 
-	/** The message a refused sign-in shows. */
+	/**
+	 * The message a refused sign-in shows: what is wrong, the exact command
+	 * that fixes it, and the other way out -- the panel's files kept
+	 * somewhere of their own.
+	 */
 	static function problemMessage($problem)
 	{
+		$fix = self::fixFor($problem);
 		return 'The control panel is locked: its credential store cannot be trusted (' . $problem . '). '
-			. 'Run `qbixctl panel:check` on the server for the fix.';
+			. ($fix ? 'Fix: `' . $fix[0] . '` on the server. ' : '')
+			. 'Or keep the panel\'s files in a directory of their own: set Q.panel.aclDir and Q.panel.sessionsDir, '
+			. 'or start the server with --conf-dir. `qbixctl panel:check` shows every path.';
+	}
+
+	/**
+	 * The commands that fix one trust problem, as problem() words it; the
+	 * most direct first. Empty when there is no command for it.
+	 * @method fixFor
+	 * @static
+	 * @param {string|null} $problem
+	 * @return {array}
+	 */
+	static function fixFor($problem)
+	{
+		$problem = (string) $problem;
+		$euid = self::euid();
+		$user = ($euid !== null and function_exists('posix_getpwuid') and ($pw = @posix_getpwuid($euid))) ? $pw['name'] : 'root';
+		$q = function ($p) { return escapeshellarg($p); };
+		if (preg_match('/^(.+?) is writable by group or others/', $problem, $m)) {
+			return array('chmod g-w,o-w ' . $q($m[1]));
+		}
+		if (preg_match('/^(.+?) belongs to .+?, not to the server\'s /', $problem, $m)) {
+			return array("chown $user " . $q($m[1]) . ' && chmod 700 ' . $q($m[1]));
+		}
+		if (preg_match('/^(.+?) belongs to .+?, who could rename/', $problem, $m)) {
+			return array('chown root ' . $q($m[1]) . ' && chmod g-w,o-w ' . $q($m[1]));
+		}
+		if (preg_match('/^(.+?) is a symbolic link/', $problem, $m)) {
+			return array('replace the link ' . $q($m[1]) . ' with a real directory (or point Q.panel.aclDir past it)');
+		}
+		if (preg_match('/^(?:cannot create )?(.+?)(?: does not exist)?$/', $problem, $m) and strpos($problem, 'cannot create') === 0) {
+			return array('mkdir -p -m 700 ' . $q($m[1]) . " && chown $user " . $q($m[1]));
+		}
+		return array();
 	}
 
 	// ── Reading and writing ─────────────────────────────────────────────
@@ -619,13 +658,18 @@ class Q_WebServer_Panel_Store
 		}
 		$fix = array();
 		if ($problem !== null) {
+			// The real cause first -- often a directory above the store, such
+			// as an application directory a umask of 002 left group-writable.
+			$fix = self::fixFor($problem);
 			$euid = self::euid();
 			$user = ($euid !== null and function_exists('posix_getpwuid') and ($pw = @posix_getpwuid($euid))) ? $pw['name'] : 'root';
-			foreach (array($d['acl'], $d['sessions']) as $dir) {
+			// The blanket repair only when the cause has no command of its own.
+			foreach ($fix ? array() : array($d['acl'], $d['sessions']) as $dir) {
 				$fix[] = "chown -R $user " . escapeshellarg($dir) . ' && chmod 700 ' . escapeshellarg($dir)
 					. ' && find ' . escapeshellarg($dir) . ' -type f -exec chmod 600 {} +';
 			}
 			$fix[] = 'every directory above them must belong to root (or ' . $user . ') and not be writable by group or others';
+			$fix[] = 'or keep the panel\'s files in a directory of their own: set Q.panel.aclDir and Q.panel.sessionsDir, or start the server with --conf-dir';
 		}
 		return array('ok' => $problem === null, 'source' => $d['source'], 'acl' => $d['acl'],
 			'sessions' => $d['sessions'], 'rows' => $rows, 'problem' => $problem, 'fix' => $fix,
