@@ -2322,6 +2322,37 @@ class Q_WebServer
 			}
 			return array('status'=>404, 'body'=>'Attestation not available');
 		}
+		// ── Mesh sync endpoints (opt-in; OFF by default) ──
+		// Bootstrapped by an unauthenticated handshake and then relay requests
+		// between servers, so they stay 404 unless Q.webserver.mesh is set.
+		if (strpos($path, '/Q/sync/') === 0) {
+			if (!class_exists('Q_WebServer_Mesh', false)) {
+				require_once __DIR__ . '/WebServer/Mesh.php';
+			}
+			if (!Q_WebServer_Mesh::enabled()) {
+				return array('status' => 404, 'body' => 'Not found',
+					'headers' => array('Content-Type' => 'text/plain'));
+			}
+			$syncAction = substr($path, 8); // strip '/Q/sync/'
+			$syncData = array();
+			if (!empty($parsed['body'])) {
+				$syncData = json_decode($parsed['body'], true) ?: array();
+			}
+			// $parsed['query'] is the raw query string; array_merge() on a
+			// string throws a TypeError, so normalise it to an array first.
+			$syncQuery = $parsed['query'] ?? array();
+			if (!is_array($syncQuery)) {
+				$qp = array();
+				parse_str((string) $syncQuery, $qp);
+				$syncQuery = $qp;
+			}
+			$syncData = array_merge($syncData, $syncQuery);
+			Q_WebServer_Mesh::init();
+			$result = Q_WebServer_Mesh::handleSyncApi($syncAction, $syncData);
+			return array('status' => 200,
+				'body' => json_encode($result),
+				'headers' => array('Content-Type' => 'application/json'));
+		}
 		if ($path === '/Q/cluster/join' && $method === 'POST') {
 			if (class_exists('Q_WebServer_Cluster', false)) {
 				$body = $parsed['body'] ?? '';
@@ -3111,6 +3142,25 @@ class Q_WebServer
 				} else {
 					self::sendResponse($client, 404, 'Not available');
 				}
+				return false;
+			}
+			// ── Mesh sync endpoints (opt-in; OFF by default) — see HTTP/1.1 path ──
+			if (strpos($path, '/Q/sync/') === 0) {
+				if (!class_exists('Q_WebServer_Mesh', false)) {
+					require_once __DIR__ . '/WebServer/Mesh.php';
+				}
+				if (!Q_WebServer_Mesh::enabled()) {
+					self::sendResponse($client, 404, 'Not found');
+					return false;
+				}
+				$sa = substr($path, 8);
+				$sd = !empty($parsed['body']) ? (json_decode($parsed['body'], true) ?: array()) : array();
+				$sq = $parsed['query'] ?? array();
+				if (!is_array($sq)) { $qp = array(); parse_str((string) $sq, $qp); $sq = $qp; }
+				$sd = array_merge($sd, $sq);
+				Q_WebServer_Mesh::init();
+				$r = Q_WebServer_Mesh::handleSyncApi($sa, $sd);
+				self::sendResponse($client, 200, json_encode($r), 'application/json');
 				return false;
 			}
 			if ($path === '/Q/cluster/join' && $method === 'POST') {

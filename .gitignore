@@ -2,6 +2,8 @@
 files/
 local/
 tests/local/
+# Mesh identity keypair (private key) — generated on first run, never committed
+keys/
 
 # Build artifacts
 # bin/qbixserver.phar is NOT here: it is tracked, it is what a Composer install

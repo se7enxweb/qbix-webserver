@@ -1613,6 +1613,18 @@ fwrite(STDERR, "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Health:    /Q/health", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Docs:      /Q/docs", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  I/O:       $evLoop", $W) . "│\n");
+
+// ── Mesh identity — only when the mesh is opted in (OFF by default) ──
+$meshFile = __DIR__ . '/src/Q/WebServer/Mesh.php';
+if (is_file($meshFile)) {
+	require_once $meshFile;
+	if (Q_WebServer_Mesh::enabled()) {
+		Q_WebServer_Mesh::init();
+		$meshId = Q_WebServer_Mesh::peerId();
+		fwrite(STDERR, "  │" . str_pad("  Mesh ID:   " . substr($meshId, 0, 12) . "…", $W) . "│\n");
+	}
+}
+
 fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
 fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
 fwrite(STDERR, "\n");
