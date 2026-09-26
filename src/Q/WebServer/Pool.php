@@ -1618,10 +1618,10 @@ class Q_WebServer_Pool
 				array_unshift($this->pending, array($client, $parsed, $scriptPath, $responder));
 			} elseif ($responder) {
 				call_user_func($responder, array('status' => 502,
-					'headers' => array('Content-Type' => 'text/plain; charset=utf-8'),
-					'body' => 'No worker could take the request'));
+					'headers' => array('Content-Type' => 'text/html; charset=utf-8'),
+					'body' => Q_WebServer::renderErrorPage(502)));
 			} elseif (is_resource($client)) {
-				Q_WebServer::sendResponse($client, 502, 'No worker could take the request');
+				Q_WebServer::sendResponse($client, 502, Q_WebServer::renderErrorPage(502), 'text/html; charset=utf-8');
 				if (is_resource($client)) @fclose($client);
 			}
 			$this->recycle($index, true);
@@ -1795,10 +1795,10 @@ class Q_WebServer_Pool
 				// HTTP/2: the answer belongs on its stream, never as HTTP/1.1
 				// bytes written into the shared connection.
 				call_user_func($responder, array('status' => 502,
-					'headers' => array('Content-Type' => 'text/plain; charset=utf-8'),
-					'body' => 'Worker died'));
+					'headers' => array('Content-Type' => 'text/html; charset=utf-8'),
+					'body' => Q_WebServer::renderErrorPage(502)));
 			} elseif (is_resource($c)) {
-				Q_WebServer::sendResponse($c, 502, 'Worker died');
+				Q_WebServer::sendResponse($c, 502, Q_WebServer::renderErrorPage(502), 'text/html; charset=utf-8');
 				if (is_resource($c)) @fclose($c);
 			}
 		} elseif (isset($this->workerClients[$index])) {
@@ -2124,15 +2124,16 @@ class Q_WebServer_Pool
 			$method = $parsed['method'] ?? 'GET';
 			$uri = $parsed['uri'] ?? '/';
 			$ms = round(($now - $started) * 1000, 1);
-			$body = 'Request timed out';
+			// The designed page, not the phrase: a visitor is looking at this.
+			$body = Q_WebServer::renderErrorPage(504);
 			$client = $this->workerClients[$index] ?? null;
 			$responder = $this->workerResponders[$index] ?? null;
 			if ($responder) {
 				call_user_func($responder, array('status' => 504,
-					'headers' => array('Content-Type' => 'text/plain; charset=utf-8'),
+					'headers' => array('Content-Type' => 'text/html; charset=utf-8'),
 					'body' => $body));
 			} elseif ($client and is_resource($client)) {
-				Q_WebServer::sendResponse($client, 504, $body);
+				Q_WebServer::sendResponse($client, 504, $body, 'text/html; charset=utf-8');
 				Q_WebServer::closeClient((int) $client);
 				if (is_resource($client)) @fclose($client);
 			}

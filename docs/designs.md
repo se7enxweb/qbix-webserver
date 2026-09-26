@@ -50,6 +50,14 @@ across views costs little.
 | `listing` | directory listings | `safePath`, `listHtml`, `imagesJson` |
 | `error` | error pages | `brand`, `code`, `title`, `msg` |
 
+The `error` view is every error page the server writes itself, on HTTP/1.1 and
+HTTP/2 alike: blocked paths (403), missing files (404), a worker that stopped or
+could not be reached (502), the site being unavailable (503) and a request that
+ran past `requestTimeout` (504). Each has a plain-words title and a line on what
+to do next ("We couldn't find that page", "This page took too long"); the status
+code is on the page too. A domain's own error document, or `errors/<code>.php`
+or `.html` in the application, still takes precedence.
+
 The engine's own design is `designs/default/` in its source tree. The dashboard,
 panel and docs views share a toolbar near the top of the page that links the
 server's views — dashboard, control panel, documentation, PHP information, health

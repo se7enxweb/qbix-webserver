@@ -992,8 +992,12 @@ class Q_WebServer
 			return array('status' => $code,
 				'headers' => array('content-type' => 'text/html; charset=utf-8'), 'body' => $doc);
 		}
+		// The same designed page HTTP/1.1 sends. This used to be the bare
+		// word ("Forbidden", nine bytes of text/plain), and HTTP/2 is what a
+		// browser speaks, so it was the page most visitors actually saw.
 		return array('status' => $code,
-			'headers' => $code === 404 ? array('content-type' => 'text/plain') : array(), 'body' => $text);
+			'headers' => array('content-type' => 'text/html; charset=utf-8'),
+			'body' => self::renderErrorPage($code));
 	}
 
 	static function http2Route($key, $request)
@@ -2559,7 +2563,7 @@ class Q_WebServer
 		}
 		if (self::isBlocked($path)) {
 			return array('status'=>403, 'body'=>self::renderErrorPage(403, $path),
-				'headers'=>array('Content-Type'=>'text/plain'));
+				'headers'=>array('Content-Type'=>'text/html; charset=utf-8'));
 		}
 
 		// Asked only for the server's own routes (http2Route(), for /Q/ and
@@ -4139,7 +4143,7 @@ WORKER;
 		$cwd = dirname($scriptPath); // run in the script's directory
 		$process = proc_open($cgiBinary, $descriptors, $pipes, $cwd, $env);
 		if (!is_resource($process)) {
-			self::sendResponse($client, 502, 'CGI process failed to start');
+			self::sendResponse($client, 502, self::renderErrorPage(502), 'text/html; charset=utf-8');
 			return false;
 		}
 
@@ -4191,7 +4195,7 @@ WORKER;
 
 		// Handle timeout
 		if (microtime(true) >= $deadline && $stdout === '') {
-			self::sendResponse($client, 504, 'CGI process timed out');
+			self::sendResponse($client, 504, self::renderErrorPage(504), 'text/html; charset=utf-8');
 			return false;
 		}
 
@@ -6180,24 +6184,28 @@ WORKER;
 			}
 		}
 
-		// Built-in error pages
+		// Built-in error pages: what happened, in words a visitor uses, and
+		// what to do next. The status code is on the page as well, for anyone
+		// who needs it; the title does not have to be the protocol's name.
 		$titles = array(
-			403 => 'Forbidden',
-			404 => 'Not Found',
-			413 => 'Payload Too Large',
-			429 => 'Too Many Requests',
-			500 => 'Server Error',
-			502 => 'Bad Gateway',
-			503 => 'Service Unavailable',
+			403 => 'You can\'t open this page',
+			404 => 'We couldn\'t find that page',
+			413 => 'That is too big to send',
+			429 => 'Too many requests',
+			500 => 'Something went wrong on our side',
+			502 => 'This page didn\'t finish loading',
+			503 => 'We\'ll be right back',
+			504 => 'This page took too long',
 		);
 		$messages = array(
-			403 => 'You don\'t have permission to access this resource.',
-			404 => "The page <code>{$safe}</code> could not be found.",
-			413 => 'The request body exceeds the maximum allowed size.',
-			429 => 'Please slow down and try again later.',
-			500 => 'Something went wrong. The server encountered an internal error.',
-			502 => 'The server received an invalid response from an upstream server.',
-			503 => 'The server is temporarily unavailable. Please try again later.',
+			403 => 'This address isn\'t open to visitors. If a link brought you here, it may point somewhere private.',
+			404 => "Nothing lives at <code>{$safe}</code>. Check the address for a typo, or start again from the home page.",
+			413 => 'What you tried to send is larger than this site accepts. Try a smaller file.',
+			429 => 'There have been a lot of requests from you in a short time. Wait a moment, then try again.',
+			500 => 'The server could not finish this page. Please try again in a moment.',
+			502 => 'The part of the server that builds pages stopped while working on this one. Please try again; it usually works the second time.',
+			503 => 'The site is busy or being updated. Please try again in a minute.',
+			504 => 'It took longer than the server allows, so it was stopped. Please try again in a moment.',
 		);
 		$title = $titles[$code] ?? 'Error';
 		// $message, when given, is HTML the server wrote itself -- never request data.
