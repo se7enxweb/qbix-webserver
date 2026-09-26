@@ -51,7 +51,9 @@ A response is stored only when all of these hold:
 - `Cache-Control` says neither `no-store` nor `private`.
 
 A cached page is served only to a request that could have produced it: a `GET`
-with no `Authorization` header and no skip cookie. A skip cookie matches any cookie
+with no `Authorization` header and no skip cookie. A `HEAD` for a cached page is
+answered from the same entry over HTTP/1.1, with the headers the `GET` gets and no
+body; a `HEAD` is never stored. A skip cookie matches any cookie
 whose name begins with it, so `PHPSESSID` also covers a name with a suffix added.
 
 The key is the host, the path, the query string and the coding the stored body is

@@ -2908,7 +2908,9 @@ class Q_WebServer
 		// is the ACME challenge, which is answered from a store of its own and
 		// must work even when the cache is confused.
 		if ($method === 'GET' or $method === 'HEAD') {
-			$cached = Q_WebServer_Cache::get($parsed);
+			// A HEAD is answered from the GET's entry, headers only: without
+			// this it went to a worker and rendered the page to throw it away.
+			$cached = Q_WebServer_Cache::get($parsed, true);
 			if ($cached) {
 				$fresh = Q_WebServer_Cache::notModified($cached, $parsed['headers']);
 				if ($fresh !== null) $cached = $fresh;
@@ -2917,7 +2919,7 @@ class Q_WebServer
 				self::sendResponse($client, $cached['status'],
 					$cached['body'],
 					$cached['headers']['Content-Type'] ?? 'text/html',
-					$cached['headers']);
+					$cached['headers'], $method === 'HEAD');
 				return false;
 			}
 		}
@@ -5715,7 +5717,7 @@ WORKER;
 		return ($keepAlive && $status < 500) ? 'keep-alive' : 'close';
 	}
 
-	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
+	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array(), $headOnly = false)
 	{
 		static $reasons = array(
 			200=>'OK', 301=>'Moved Permanently', 302=>'Found', 304=>'Not Modified',
@@ -5766,7 +5768,9 @@ WORKER;
 			$status, $reasons[$status] ?? 'OK',
 			$type, strlen($body), $conn, $extra
 		);
-		self::writeAll($client, $out . "\r\n" . $body);
+		// A HEAD gets the headers a GET would, Content-Length included, and
+		// no body.
+		self::writeAll($client, $out . "\r\n" . ($headOnly ? '' : $body));
 	}
 
 	/**

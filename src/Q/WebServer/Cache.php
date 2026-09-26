@@ -469,12 +469,16 @@ class Q_WebServer_Cache
 	 * @method get
 	 * @static
 	 * @param {array} $parsed Parsed request
+	 * @param {boolean} [$allowHead=false] answer a HEAD from the GET's entry.
+	 *   Only for a caller that then sends the headers without the body; the
+	 *   HTTP/2 and route() paths hand the entry on whole, so they leave it off.
 	 * @return {array|null} [status, headers, body] or null
 	 */
-	static function get($parsed)
+	static function get($parsed, $allowHead = false)
 	{
 		if (!self::$enabled) return null;
-		if ($parsed['method'] !== 'GET') return null;
+		if ($parsed['method'] !== 'GET'
+		and !($allowHead and $parsed['method'] === 'HEAD')) return null;
 		if (self::isServerPath($parsed['path'] ?? '')) return null;
 
 		// Skip cache if request has bypass cookies, or credentials of its own
