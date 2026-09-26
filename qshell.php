@@ -18,6 +18,18 @@
  */
 
 if (PHP_SAPI !== 'cli') { exit("qshell runs from the command line\n"); }
+
+// One of the engine's console commands, run by the server for a runner that
+// asked (Q_WebServer_Shell_Server::serverRun()): in a session of its own, so a
+// restart it triggers does not take it down with the server, and with PHP's
+// messages on standard error, where the server keeps them out of the terminal.
+if (($argv[1] ?? '') === '--console') {
+	if (function_exists('posix_setsid')) @posix_setsid();
+	$args = array_merge(array('-d', 'display_errors=stderr', '-d', 'log_errors=0', __DIR__ . '/qbixconsole.php'), array_slice($argv, 2));
+	if (function_exists('pcntl_exec')) @pcntl_exec(PHP_BINARY, $args);
+	$p = proc_open(array_merge(array(PHP_BINARY), $args), array(0 => STDIN, 1 => STDOUT, 2 => STDERR), $pipes);
+	exit(is_resource($p) ? proc_close($p) : 127);
+}
 if (!defined('DS')) define('DS', DIRECTORY_SEPARATOR);
 require_once __DIR__ . '/src/Q.php';
 
@@ -47,6 +59,7 @@ if ($mode === 'exec') {
 	$ctx = (array) ($req['ctx'] ?? array());
 	qshell_config($ctx);
 	$io = new Q_WebServer_Shell_JsonIo(STDIN, STDOUT, !empty($req['interactive']));
+	$io->serverRun = !empty($req['serverRun']);
 	// History, aliases and the shell directory's scripts come from the server,
 	// and changes go back to it: this runner may not be able to reach them.
 	$history = array_key_exists('history', $req)

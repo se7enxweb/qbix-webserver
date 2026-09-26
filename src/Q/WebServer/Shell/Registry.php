@@ -213,15 +213,48 @@ class Q_WebServer_Shell_Registry
 		return count($hits) === 1 ? $hits[0] : null;
 	}
 
-	/** Names close to one that was not found. */
+	/** Names close to one that was not found (never the name itself). */
 	function suggest($name)
 	{
 		$out = array();
 		foreach (array_keys($this->specs) as $n) {
 			$first = explode(' ', $n)[0];
-			if (levenshtein($name, $first) <= 2 && !in_array($first, $out, true)) $out[] = $first;
+			if ($first !== $name && levenshtein($name, $first) <= 2 && !in_array($first, $out, true)) $out[] = $first;
 		}
 		return array_slice($out, 0, 3);
+	}
+
+	/** The subcommands of a noun (server -> status, stop, ...), or none. */
+	function subcommands($noun)
+	{
+		$out = array();
+		foreach (array_keys($this->specs) as $n) {
+			if (strpos($n, $noun . ' ') === 0) $out[] = substr($n, strlen($noun) + 1);
+		}
+		return $out;
+	}
+
+	/**
+	 * What to say when a line names no command: a noun without a verb, a
+	 * verb the noun does not have, or an unknown name.
+	 * @return {array} array(message, exit status)
+	 */
+	function notFound(array $argv)
+	{
+		$name = (string) $argv[0];
+		$subs = $this->subcommands($name);
+		if ($subs) {
+			$list = implode(', ', array_slice($subs, 0, 16)) . (count($subs) > 16 ? ', ...' : '');
+			if (!isset($argv[1])) return array('qsh: ' . $name . ': which one? ' . $list . '  (help ' . $name . ")\n", 2);
+			$near = array();
+			foreach ($subs as $v) {
+				if (levenshtein((string) $argv[1], $v) <= 2 || ($argv[1] !== '' && strpos($v, (string) $argv[1]) === 0)) $near[] = $v;
+			}
+			return array('qsh: ' . $name . ': no subcommand ' . $argv[1] . ($near ? ' (did you mean ' . implode(', ', array_slice($near, 0, 3)) . '?)' : '')
+				. '; it has ' . $list . "\n", 127);
+		}
+		$hint = $this->suggest($name);
+		return array('qsh: command not found: ' . $name . ($hint ? ' (did you mean ' . implode(', ', $hint) . '?)' : '') . "\n", 127);
 	}
 
 	/** Every spec, by name. */
@@ -244,6 +277,14 @@ class Q_WebServer_Shell_Registry
 	{
 		switch ($spec['source']) {
 			case 'console':
+				// Under the server: it runs them with its own rights, which the
+				// runner (Q.shell.user) does not have -- its configuration, logs,
+				// certificates and process. At a terminal: run here.
+				$io = $sink->io();
+				if ($io instanceof Q_WebServer_Shell_JsonIo && $io->serverRun) {
+					return $io->runOnServer(array('kind' => 'console', 'name' => $spec['console'],
+						'args' => array_values($args), 'stdin' => (string) $stdin), $sink);
+				}
 				$dir = (string) ($this->ctx['serverDir'] ?? '');
 				$argv = array(PHP_BINARY, $dir . '/qbixconsole.php', $spec['console']);
 				foreach ($args as $a) $argv[] = $a;

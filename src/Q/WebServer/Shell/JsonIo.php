@@ -26,6 +26,9 @@ class Q_WebServer_Shell_JsonIo extends Q_WebServer_Shell_Io
 	/** @var array messages read from stdin while waiting for another */
 	private $pending = array();
 
+	/** @var boolean whether the server runs the engine's commands for this runner (see runOnServer()) */
+	public $serverRun = false;
+
 	function __construct($in = null, $out = null, $interactive = true)
 	{
 		$this->in = $in ?: STDIN;
@@ -83,6 +86,44 @@ class Q_WebServer_Shell_JsonIo extends Q_WebServer_Shell_Io
 		}
 		return null;
 	}
+
+	/**
+	 * Have the server run a command with its own rights -- an engine console
+	 * command, or reading its logs -- and pass its output on as it comes.
+	 * The server checks the tier and the password again.
+	 * @param {array} $request kind (console|logs), name, args, stdin
+	 * @return {integer} the command's exit status
+	 */
+	function runOnServer(array $request, Q_WebServer_Shell_Sink $sink)
+	{
+		$this->send(array('t' => 'run') + $request);
+		$cut = false;
+		while (($line = fgets($this->in)) !== false) {
+			$m = json_decode($line, true);
+			if (!is_array($m)) continue;
+			$t = $m['t'] ?? '';
+			if ($t === 'run_out') {
+				$d = (string) ($m['d'] ?? '');
+				if (($m['s'] ?? 'out') === 'err') { $sink->error($d); continue; }
+				if ($cut) continue;
+				if (!$sink->write($d)) {
+					// Over the output cap: the server stops the command.
+					$cut = true;
+					$this->send(array('t' => 'run_stop'));
+				}
+				continue;
+			}
+			if ($t === 'run_exit') {
+				if (isset($m['error']) && $m['error'] !== null && $m['error'] !== '') $sink->error('qsh: ' . $m['error'] . "\n");
+				return $cut ? 141 : (int) ($m['code'] ?? 1);
+			}
+			// Anything else (typing meanwhile) is kept for whoever asks next.
+			if (count($this->pending) < 1000) $this->pending[] = $m;
+		}
+		$sink->error("qsh: the server did not answer\n");
+		return 1;
+	}
+
 	function prompt($question, $secret = false)
 	{
 		if (!$this->interactive) return null;

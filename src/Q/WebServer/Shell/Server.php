@@ -240,6 +240,9 @@ class Q_WebServer_Shell_Server
 			'files' => (object) Q_WebServer_Shell_History::scriptsIn(Q_WebServer_Shell::dataDir()),
 			'vars' => (object) $s['vars'], 'exported' => $s['exported'], 'context' => (object) $s['context'], 'status' => $s['status'],
 			'ctx' => self::context(),
+			// The engine's console commands and the server's logs are the
+			// server's to run: the runner asks (see serverRun()).
+			'serverRun' => true,
 		);
 		$runner = self::runnerScript();
 		if ($runner === null) return array('ok' => false, 'error' => 'the shell runner (qshell.php) is missing from this installation');
@@ -251,6 +254,10 @@ class Q_WebServer_Shell_Server
 		if (!is_resource($proc)) return array('ok' => false, 'error' => 'could not start the shell runner');
 		Q_WebServer_Shell_Exec::closeExtra($pipes);
 		fwrite($pipes[0], json_encode($request, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
+		// From here on everything to the runner is queued (toRunner()): a
+		// blocking write could stall the loop while the runner is itself
+		// waiting for the loop to read its output.
+		stream_set_blocking($pipes[0], false);
 		stream_set_blocking($pipes[1], false);
 		stream_set_blocking($pipes[2], false);
 		$status = proc_get_status($proc);
@@ -260,7 +267,8 @@ class Q_WebServer_Shell_Server
 			'pid' => (int) $status['pid'], 'started' => microtime(true), 'bg' => $bg, 'state' => 'running', 'code' => null,
 			'stdout' => '', 'stderr' => '', 'partial' => '', 'eof' => false, 'watchers' => array(), 'killAt' => null,
 			'timeout' => $bg ? 0 : (int) ($opts['timeout'] ?? Q_WebServer_Shell::config('timeout')), 'tier' => $tier,
-			'ip' => (string) ($s['ip'] ?? ''), 'quiet' => !empty($opts['quiet']), 'expanded' => null, 'asRoot' => $asRoot);
+			'ip' => (string) ($s['ip'] ?? ''), 'quiet' => !empty($opts['quiet']), 'expanded' => null, 'asRoot' => $asRoot,
+			'wbuf' => '', 'wwatch' => null, 'run' => null, 'phpErrors' => 0);
 		self::$jobs[$id]['watchers'][] = Q_Evented::onReadable($pipes[1], function () use ($id) { Q_WebServer_Shell_Server::readRunner($id); });
 		self::$jobs[$id]['watchers'][] = Q_Evented::onReadable($pipes[2], function () use ($id) { Q_WebServer_Shell_Server::readRunnerErr($id); });
 		self::emit($key, array('t' => 'start', 'id' => $id, 'n' => $n, 'line' => $line, 'bg' => $bg, 'quiet' => !empty($opts['quiet'])));
@@ -363,7 +371,8 @@ class Q_WebServer_Shell_Server
 			}
 			return;
 		}
-		self::onMessage($id, array('t' => 'err', 'd' => $chunk));
+		$chunk = self::filterPhpErrors($chunk, 'the shell runner', $j['phpErrors']);
+		if ($chunk !== '') self::onMessage($id, array('t' => 'err', 'd' => $chunk));
 	}
 
 	private static function onMessage($id, array $m)
@@ -421,16 +430,21 @@ class Q_WebServer_Shell_Server
 			case 'hist_query':
 				// History older than the page the runner was handed: history,
 				// history | grep, !n, !prefix.
-				@fwrite($j['pipes'][0], json_encode(array('t' => 'hist_reply') + self::historyQuery($m),
-					JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
+				self::toRunner($id, array('t' => 'hist_reply') + self::historyQuery($m));
 				return;
 			case 'verify':
 				// A password for sudo: checked here, where the password file is,
 				// through the panel's observers (lockout, log).
 				list($ok, $error) = self::elevateSession($key, (string) ($m['d'] ?? ''));
 				$until = (int) (self::$sessions[$key]['elevatedUntil'] ?? 0);
-				@fwrite($j['pipes'][0], json_encode(array('t' => 'verified', 'ok' => $ok, 'until' => $until, 'error' => $error)) . "\n");
+				self::toRunner($id, array('t' => 'verified', 'ok' => $ok, 'until' => $until, 'error' => $error));
 				if ($ok) self::emit($key, array('t' => 'ctl', 'id' => $id, 'op' => 'elevated', 'until' => $until));
+				return;
+			case 'run':
+				self::serverRun($id, $m);
+				return;
+			case 'run_stop':
+				self::stopRun($id, 15);
 				return;
 			case 'ctl':
 				if (($m['op'] ?? '') === 'apply') {
@@ -464,6 +478,9 @@ class Q_WebServer_Shell_Server
 			$j['eof'] = true;
 			foreach ($j['watchers'] as $w) Q_Evented::cancel($w);
 			$j['watchers'] = array();
+			if (!empty($j['wwatch'])) { Q_Evented::cancel($j['wwatch']); $j['wwatch'] = null; }
+			$j['wbuf'] = '';
+			self::stopRun($id, 15);
 		}
 		$st = proc_get_status($j['proc']);
 		if ($st['running']) {
@@ -506,6 +523,7 @@ class Q_WebServer_Shell_Server
 		} else {
 			@proc_terminate(self::$jobs[$id]['proc'], $n);
 		}
+		if (in_array($n, array(1, 2, 9, 15), true)) self::stopRun($id, $n);
 		if ($n === 2 || $n === 15) self::$jobs[$id]['killAt'] = microtime(true) + 2;
 		return true;
 	}
@@ -541,7 +559,7 @@ class Q_WebServer_Shell_Server
 	{
 		if (!isset(self::$jobs[$id]) || self::$jobs[$id]['state'] !== 'running') return false;
 		if (strlen((string) $data) > 65536) return false;
-		@fwrite(self::$jobs[$id]['pipes'][0], json_encode(array('t' => 'stdin', 'd' => (string) $data), JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
+		self::toRunner($id, array('t' => 'stdin', 'd' => (string) $data));
 		return true;
 	}
 
@@ -572,6 +590,244 @@ class Q_WebServer_Shell_Server
 
 	/** The owner hash of a token, as sessions record it. */
 	static function owner($token) { return substr(hash('sha256', (string) $token), 0, 32); }
+
+	// ── Commands the server runs for a runner ───────────────────────────
+
+	/** @var Q_WebServer_Shell_Registry|null the registry the server checks requests against */
+	private static $registry = null;
+
+	/**
+	 * A command a runner asks the server to run with the server's own rights:
+	 * the engine's console commands (server, ssl, conf, site, mod, cache,
+	 * panel, layout, ext ...) and reading the server's logs.
+	 *
+	 * The runner itself runs as Q.shell.user, which cannot read the server's
+	 * configuration (often root-only), its logs, or signal and reconfigure
+	 * it; the engine's own commands are the server administering itself, as
+	 * the panel's buttons are. The runner has asked for confirmation; the
+	 * tier and the password are checked again here, where a runner cannot
+	 * change them. Site code, scripts and OS commands never come this way:
+	 * they stay in the runner, as its user.
+	 */
+	private static function serverRun($id, array $m)
+	{
+		$j = &self::$jobs[$id];
+		if (!empty($j['run'])) return self::runReply($id, 1, 'a server command is already running for this job');
+		$args = array();
+		foreach (array_slice((array) ($m['args'] ?? array()), 0, 256) as $a) {
+			if (!is_scalar($a) || strlen((string) $a) > 8192 || strpos((string) $a, "\0") !== false) return self::runReply($id, 2, 'bad arguments');
+			$args[] = (string) $a;
+		}
+		$kind = (string) ($m['kind'] ?? '');
+		if ($kind === 'logs') {
+			list($code, $out, $err) = Q_WebServer_Shell_Builtins::logsTail(self::logPaths(), $args);
+			if ($out !== '') self::toRunner($id, array('t' => 'run_out', 's' => 'out', 'd' => $out));
+			return self::runReply($id, $code, $err !== '' ? rtrim($err, "\n") : null);
+		}
+		if ($kind !== 'console') return self::runReply($id, 2, 'unknown kind of server command');
+		$name = (string) ($m['name'] ?? '');
+		$registry = self::registry();
+		$spec = $registry ? $registry->get($name) : null;
+		if (!$spec || ($spec['source'] ?? '') !== 'console') return self::runReply($id, 127, 'no such server command: ' . $name);
+		$tiers = Q_WebServer_Shell_Interpreter::TIERS;
+		if (($tiers[$spec['tier']] ?? 3) > ($tiers[$j['tier']] ?? 1)) {
+			return self::runReply($id, 126, $spec['name'] . ' is a ' . $spec['tier'] . ' command; this session allows ' . $j['tier']);
+		}
+		if (!empty($spec['elevate']) && (int) (self::$sessions[$j['session']]['elevatedUntil'] ?? 0) <= time()) {
+			return self::runReply($id, 1, $spec['name'] . ' needs the control panel password again (sudo -v)');
+		}
+		$stdin = (string) ($m['stdin'] ?? '');
+		if (strlen($stdin) > 60000) return self::runReply($id, 2, 'too much input for a server command');
+		$runner = self::runnerScript();
+		if ($runner === null) return self::runReply($id, 1, 'the shell runner (qshell.php) is missing from this installation');
+		// These replace the running server, and this session with it: say so
+		// now, since the command's own answer may never arrive.
+		$away = array('server:reload' => 'the server reloads; this shell reconnects by itself in a moment',
+			'server:restart' => 'the server restarts; this shell reconnects by itself in a moment',
+			'server:stop' => 'the server stops; this shell loses its connection');
+		if (isset($away[$spec['console']])) {
+			self::emit($j['session'], array('t' => 'err', 'id' => $id, 'd' => 'qsh: ' . $away[$spec['console']] . "\n", 'job' => $j['bg']));
+		}
+		$argv = array_merge(array(PHP_BINARY, $runner, '--console', $spec['console']), $args, $registry->contextFlags($spec, $args));
+		$pipes = array();
+		// None of the server's sockets, and only its own trimmed environment:
+		// variables the session exported are not handed to the server's rights.
+		$proc = @proc_open($argv, Q_WebServer_Shell_Exec::descriptors(array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'))),
+			$pipes, null, Q_WebServer_Shell_Exec::environment(array()));
+		if (!is_resource($proc)) return self::runReply($id, 1, 'could not start ' . $spec['name']);
+		Q_WebServer_Shell_Exec::closeExtra($pipes);
+		if ($stdin !== '') @fwrite($pipes[0], $stdin);
+		@fclose($pipes[0]);
+		stream_set_blocking($pipes[1], false);
+		stream_set_blocking($pipes[2], false);
+		$st = proc_get_status($proc);
+		$j['run'] = array('proc' => $proc, 'pipes' => array(1 => $pipes[1], 2 => $pipes[2]), 'pid' => (int) $st['pid'],
+			'name' => $spec['name'], 'line' => trim($spec['name'] . ' ' . implode(' ', $args)), 'started' => microtime(true),
+			'watchers' => array(), 'errPartial' => '', 'phpErrors' => 0, 'tier' => $spec['tier'], 'stopped' => false);
+		foreach (array(1, 2) as $fd) {
+			$j['run']['watchers'][$fd] = Q_Evented::onReadable($pipes[$fd], function () use ($id, $fd) { Q_WebServer_Shell_Server::readRun($id, $fd); });
+		}
+	}
+
+	/** Output from a server command, passed on to the runner that asked. */
+	static function readRun($id, $fd)
+	{
+		if (empty(self::$jobs[$id]['run'])) return;
+		$r = &self::$jobs[$id]['run'];
+		$chunk = @fread($r['pipes'][$fd], 65536);
+		if ($chunk === '' || $chunk === false) {
+			if (!feof($r['pipes'][$fd])) return;
+			Q_Evented::cancel($r['watchers'][$fd]);
+			unset($r['watchers'][$fd]);
+			@fclose($r['pipes'][$fd]);
+			unset($r['pipes'][$fd]);
+			if ($fd === 2 && $r['errPartial'] !== '') {
+				$rest = self::filterPhpErrors($r['errPartial'], $r['name'], $r['phpErrors']);
+				$r['errPartial'] = '';
+				if ($rest !== '') self::toRunner($id, array('t' => 'run_out', 's' => 'err', 'd' => $rest));
+			}
+			if (!$r['pipes']) self::endRun($id);
+			return;
+		}
+		if ($fd === 1) {
+			self::toRunner($id, array('t' => 'run_out', 's' => 'out', 'd' => $chunk));
+			return;
+		}
+		// Standard error, a line at a time, so a PHP warning is recognised.
+		$text = $r['errPartial'] . $chunk;
+		$cut = strrpos($text, "\n");
+		if ($cut === false) { $r['errPartial'] = strlen($text) > 65536 ? '' : $text; if (strlen($text) > 65536) self::toRunner($id, array('t' => 'run_out', 's' => 'err', 'd' => $text)); return; }
+		$r['errPartial'] = (string) substr($text, $cut + 1);
+		$lines = self::filterPhpErrors(substr($text, 0, $cut + 1), $r['name'], $r['phpErrors']);
+		if ($lines !== '') self::toRunner($id, array('t' => 'run_out', 's' => 'err', 'd' => $lines));
+	}
+
+	/** A server command's output is over: collect its status, tell the runner. */
+	static function endRun($id)
+	{
+		if (empty(self::$jobs[$id]['run'])) return;
+		$r = &self::$jobs[$id]['run'];
+		$st = proc_get_status($r['proc']);
+		if ($st['running']) {
+			Q_Evented::delay(0.05, function () use ($id) { Q_WebServer_Shell_Server::endRun($id); });
+			return;
+		}
+		$exit = proc_close($r['proc']);
+		$code = ($st['signaled'] ?? false) ? 128 + (int) $st['termsig'] : ($st['exitcode'] >= 0 ? (int) $st['exitcode'] : ($exit >= 0 ? $exit : 1));
+		$note = $r['phpErrors'] > 0
+			? $r['name'] . ' reported ' . $r['phpErrors'] . ' PHP warning(s); they are in the server\'s error log'
+			: null;
+		$j = self::$jobs[$id];
+		self::audit($j['session'], '[server] ' . $r['line'], $code, (int) round((microtime(true) - $r['started']) * 1000), $r['tier'], $j['ip']);
+		self::$jobs[$id]['run'] = null;
+		self::runReply($id, $code, $note);
+	}
+
+	/** Stop a server command a job asked for (cancel, timeout, or the runner is gone). */
+	static function stopRun($id, $sig = 15)
+	{
+		if (empty(self::$jobs[$id]['run'])) return;
+		$r = &self::$jobs[$id]['run'];
+		// It leads a session of its own (qshell.php --console): signal the group.
+		if ($r['pid'] > 0 && function_exists('posix_kill')) {
+			if (!@posix_kill(-$r['pid'], $sig)) @posix_kill($r['pid'], $sig);
+		} else {
+			@proc_terminate($r['proc'], $sig);
+		}
+		if (!$r['stopped'] && $sig !== 9) {
+			$r['stopped'] = true;
+			Q_Evented::delay(3, function () use ($id) { Q_WebServer_Shell_Server::stopRun($id, 9); });
+		}
+	}
+
+	/** The end of a server command, to the runner. */
+	private static function runReply($id, $code, $error = null)
+	{
+		self::toRunner($id, array('t' => 'run_exit', 'code' => (int) $code, 'error' => $error));
+	}
+
+	/** Queue a message for a runner's standard input, and write what it takes now. */
+	static function toRunner($id, array $msg)
+	{
+		if (!isset(self::$jobs[$id]) || self::$jobs[$id]['state'] !== 'running' || !empty(self::$jobs[$id]['eof'])) return;
+		$j = &self::$jobs[$id];
+		if (!is_resource($j['pipes'][0] ?? null)) return;
+		$j['wbuf'] .= json_encode($msg, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
+		// A runner that stopped reading: do not hold its output for ever.
+		if (strlen($j['wbuf']) > 4 * self::JOB_BUFFER) self::stopRun($id, 15);
+		self::flushRunner($id);
+	}
+
+	/** Write queued messages while the runner's pipe takes them. */
+	static function flushRunner($id)
+	{
+		if (!isset(self::$jobs[$id])) return;
+		$j = &self::$jobs[$id];
+		$pipe = $j['pipes'][0] ?? null;
+		while ($j['wbuf'] !== '' && is_resource($pipe)) {
+			$n = @fwrite($pipe, $j['wbuf']);
+			if (!$n) break;
+			$j['wbuf'] = (string) substr($j['wbuf'], $n);
+		}
+		if ($j['wbuf'] !== '' && is_resource($pipe) && $j['wwatch'] === null) {
+			$j['wwatch'] = Q_Evented::onWritable($pipe, function () use ($id) { Q_WebServer_Shell_Server::flushRunner($id); });
+		} elseif (($j['wbuf'] === '' || !is_resource($pipe)) && $j['wwatch'] !== null) {
+			Q_Evented::cancel($j['wwatch']);
+			$j['wwatch'] = null;
+		}
+	}
+
+	/**
+	 * PHP's own warnings and errors out of text meant for the terminal: each
+	 * goes to the server's error log, and the terminal gets one plain line
+	 * for an error that stopped the command (warnings are counted instead).
+	 * @param {string} $text
+	 * @param {string} $what whose output it is
+	 * @param {integer} &$count warnings taken out so far
+	 * @return {string} the text without them
+	 */
+	static function filterPhpErrors($text, $what, &$count)
+	{
+		$count = (int) $count;
+		if (strpos($text, 'PHP ') === false && !preg_match('/^(Warning|Notice|Deprecated|Fatal error|Parse error):/m', $text)) return $text;
+		$out = '';
+		foreach (preg_split('/(?<=\n)/', $text) as $line) {
+			if ($line === '') continue;
+			if (preg_match('/^(?:PHP )?(Warning|Notice|Deprecated|Strict Standards|Fatal error|Parse error|Recoverable fatal error):\s+(.*)$/s', rtrim($line, "\n"), $m)) {
+				if (class_exists('Q_WebServer_Log', false) && method_exists('Q_WebServer_Log', 'error')) {
+					@Q_WebServer_Log::error('shell: ' . $what . ': PHP ' . $m[1] . ': ' . substr($m[2], 0, 2048));
+				}
+				if (stripos($m[1], 'error') !== false) {
+					$out .= 'qsh: ' . $what . ' stopped on a PHP error (the details are in the server\'s error log)' . "\n";
+				} else {
+					$count++;
+				}
+				continue;
+			}
+			$out .= $line;
+		}
+		return $out;
+	}
+
+	/** The registry a runner's request is checked against: the engine's console commands. */
+	private static function registry()
+	{
+		if (self::$registry === null) {
+			$runner = self::runnerScript();
+			if ($runner === null) return null;
+			self::$registry = new Q_WebServer_Shell_Registry(array(
+				'serverDir' => dirname($runner),
+				'startOptions' => (array) Q_Config::get('Q', 'webserver', 'startOptions', array()),
+			));
+		}
+		return self::$registry;
+	}
+
+	/** Where the server writes its logs. */
+	private static function logPaths()
+	{
+		return array('access' => Q_WebServer_Log::$accessPath ?? null, 'error' => Q_WebServer_Log::$errorPath ?? null);
+	}
 
 	// ── The loop's housekeeping ─────────────────────────────────────────
 

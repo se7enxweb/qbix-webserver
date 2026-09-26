@@ -266,15 +266,34 @@ class Q_WebServer_Shell_Interpreter
 		$name = $argv[0];
 		if ($name === 'sys') return $this->runSystem(implode(' ', array_map(array(__CLASS__, 'quote'), array_slice($argv, 1))), $stdin, $sink);
 		$wantsHelp = isset($argv[1]) && ($argv[1] === '--help' || ($argv[1] === '-h' && $name !== 'head' && $name !== 'sort'));
-		if ($this->builtins->has($name)) {
+		// A built-in that is also a noun (layout: the shell's tabs, and
+		// "layout show" of the server) yields to that noun's own verbs.
+		$isBuiltin = $this->builtins->has($name)
+			&& !(isset($argv[1]) && in_array($argv[1], $this->registry->subcommands($name), true));
+		if ($isBuiltin) {
 			if ($wantsHelp && $name !== 'help') return $this->builtins->run('help', array($name), '', $sink);
 			return $this->builtins->run($name, array_slice($argv, 1), $stdin, $sink);
 		}
 		$found = $this->registry->resolve($argv, $this->context);
+		$preForced = false;
 		if ($found === null) {
-			$hint = $this->registry->suggest($name);
-			$sink->error('qsh: command not found: ' . $name . ($hint ? ' (did you mean ' . implode(', ', $hint) . '?)' : '') . "\n");
-			return 127;
+			// -f / --force anywhere on the line, also between the noun and its
+			// verb (exp -f cron:frequent), confirms like -f at the end.
+			$plain = array_values(array_filter($argv, function ($a) { return $a !== '-f' && $a !== '--force'; }));
+			if ($plain && count($plain) !== count($argv) && ($found = $this->registry->resolve($plain, $this->context)) !== null) {
+				$own = array_keys((array) ($found[0]['options'] ?? array()));
+				if (in_array('f', $own, true) || in_array('force', $own, true)) {
+					// The command has its own -f: it is the command's, not ours.
+					foreach (array_diff($argv, $plain) as $flag) $found[1][] = $flag;
+				} else {
+					$preForced = true;
+				}
+			}
+		}
+		if ($found === null) {
+			list($message, $code) = $this->registry->notFound($argv);
+			$sink->error($message);
+			return $code;
 		}
 		list($spec, $args) = $found;
 		// --help on a command the console does not answer itself.
@@ -286,6 +305,7 @@ class Q_WebServer_Shell_Interpreter
 			return 126;
 		}
 		list($args, $forced) = self::takeForce($args, $spec);
+		$forced = $forced || $preForced;
 		if (!empty($spec['elevate'])) {
 			if (!$this->elevate($spec['name'], array($spec['name'] . ': ' . ($spec['elevateReason'] ?? 'changes the running server')), $sink)) return 1;
 		} elseif (!empty($spec['disruptive']) && !$this->confirm($spec['name'], $forced, $sink)) {
@@ -332,7 +352,7 @@ class Q_WebServer_Shell_Interpreter
 	{
 		if ($forced || !empty($this->opts['force'])) return true;
 		if ($this->scriptDepth > 0 || !$this->io->interactive()) {
-			$sink->error('qsh: ' . $what . " changes the running server; pass -f to confirm\n");
+			$sink->error('qsh: ' . $what . " changes the running server; add -f to run it without asking\n");
 			return false;
 		}
 		$answer = $this->io->prompt($what . ': proceed? [y/N] ');

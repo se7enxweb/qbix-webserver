@@ -867,18 +867,16 @@ class Q_WebServer_Shell_Builtins
 				$sink->write(Q_WebServer_Shell_Format::properties($c, $opts));
 				return 0;
 			case 'logsTail':
-				$which = 'access';
-				$n = 20;
-				for ($i = 0; $i < count($rest); $i++) {
-					if ($rest[$i] === '-n' && isset($rest[$i + 1])) { $n = (int) $rest[++$i]; continue; }
-					if (preg_match('/^-(\d+)$/', $rest[$i], $m)) { $n = (int) $m[1]; continue; }
-					$which = $rest[$i];
+				// The server's logs are the server's to read (they are often
+				// root-only): under the server it reads them; at a terminal, here.
+				$io = $sink->io();
+				if ($io instanceof Q_WebServer_Shell_JsonIo && $io->serverRun) {
+					return $io->runOnServer(array('kind' => 'logs', 'args' => array_values($rest)), $sink);
 				}
-				$n = max(1, min(1000, $n));
-				$path = (string) ($rt['logs'][$which] ?? '');
-				if ($path === '' || !is_file($path) || !is_readable($path)) { $sink->error("logs: no $which log (access or error)\n"); return 1; }
-				$sink->write(self::tailFile($path, $n));
-				return 0;
+				list($code, $out, $err) = self::logsTail((array) ($rt['logs'] ?? array()), $rest);
+				if ($out !== '') $sink->write($out);
+				if ($err !== '') $sink->error($err);
+				return $code;
 		}
 		$sink->error("qsh: unknown internal command\n");
 		return 1;
@@ -888,6 +886,30 @@ class Q_WebServer_Shell_Builtins
 	{
 		$d = intdiv($sec, 86400); $h = intdiv($sec % 86400, 3600); $m = intdiv($sec % 3600, 60);
 		return ($d ? $d . 'd ' : '') . sprintf('%02d:%02d:%02d', $h, $m, $sec % 60);
+	}
+
+	/**
+	 * logs tail [access|error] [-n N]: the last lines of one of the server's logs.
+	 * @param {array} $logs access => path, error => path
+	 * @param {array} $rest the arguments
+	 * @return {array} array(exit status, output, error text)
+	 */
+	static function logsTail(array $logs, array $rest)
+	{
+		$which = 'access';
+		$n = 20;
+		for ($i = 0; $i < count($rest); $i++) {
+			if ($rest[$i] === '-n' && isset($rest[$i + 1])) { $n = (int) $rest[++$i]; continue; }
+			if (preg_match('/^-(\d+)$/', $rest[$i], $m)) { $n = (int) $m[1]; continue; }
+			$which = $rest[$i];
+		}
+		if ($which !== 'access' && $which !== 'error') return array(2, '', "logs: access or error, not $which\n");
+		$n = max(1, min(1000, $n));
+		$path = (string) ($logs[$which] ?? '');
+		if ($path === '') return array(1, '', "logs: this server writes no $which log (Q.webserver.log)\n");
+		if (!is_file($path)) return array(1, '', "logs: the $which log is not there yet ($path)\n");
+		if (!is_readable($path)) return array(1, '', "logs: the $which log cannot be read here ($path)\n");
+		return array(0, self::tailFile($path, $n), '');
 	}
 
 	/** The last $n lines of a file, read from its end. */

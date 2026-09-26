@@ -105,8 +105,14 @@ The shell's own security settings (below) cannot be changed from the shell.
 ### Safety
 
 - **Confirmation.** Commands that change the running server ask
-  `proceed? [y/N]`; `-f` answers yes. In scripts and through the API,
-  where nobody can answer, `-f` is required.
+  `proceed? [y/N]`; `-f` (or `--force`) answers yes, wherever it is on the
+  line — `cache clear -f` and `cache -f clear` alike, unless the command has
+  an `-f` of its own. In scripts and through the API, where nobody can
+  answer, `-f` (or `"force": true` in the request) is required. The
+  terminal asks the same way over the WebSocket and over HTTP polling.
+- **Saying what is there.** A noun without its verb (`server`) lists the
+  verbs; a verb the noun does not have (`exp cron`) says so and suggests the
+  near ones (`cron:frequent, cron:default`).
 - **OS commands are off.** `! command` or `sys command` runs a program on
   the machine only when `Q.shell.allowSystem` is `true` (default `false`),
   and only in the advanced tier.
@@ -122,11 +128,32 @@ The shell's own security settings (below) cannot be changed from the shell.
   restarting the server and changing the panel password ask the same way.
   The check reads the line as text: it is there so nobody types these out
   of habit, not as a sandbox.
-- **Never root.** Each command runs in its own process, as
-  `Q.shell.user` — by default the owner of the document root, else
+- **Never root for your code.** Each command line runs in its own process,
+  as `Q.shell.user` — by default the owner of the document root, else
   `nobody`. When the server itself runs as root, the process switches to
   that user before it runs anything, and refuses to run at all if the user
   is missing or is root. The status bar shows *runs as &lt;user&gt;*.
+  Scripts, OS commands (`sys`) and the site's own commands (a
+  distribution's, such as its console) run there, as that user.
+- **The server's own commands run as the server.** The engine's console
+  commands — `server`, `ssl`, `conf`, `site`, `mod`, `cache clear`,
+  `panel`, `layout show`, `ext` — and `logs tail` administer the server
+  itself, as the control panel's buttons do. They need what only the server
+  has: its configuration (often root-only, mode 0600), its logs, its
+  certificates, and its process to signal. So the runner asks the server to
+  run them, and the server passes the output back as it comes. The server
+  checks every such request again — the command must be one of the engine's
+  console commands, within the session's tier, and a command that needs the
+  password (`server stop`, `server restart`, `panel password`) runs only
+  while the session is confirmed — whatever the runner says. They get the
+  server's own trimmed environment, never variables the session exported,
+  and each runs in a session of its own so a restart it starts is not cut
+  off with the server. `server reload` and `server restart` say before they
+  run that the shell will reconnect, since the server they replace takes
+  this session with it.
+- **No PHP noise.** PHP's warnings and notices from the shell and from the
+  server's commands go to the server's error log, not to the terminal; an
+  error that stops a command becomes one line saying so.
 - **sudo.** `sudo <command>` runs a single command as root only when
   `Q.shell.allowRoot` is `true` (default `false`), after the password
   check, and the status bar turns red while it runs.
