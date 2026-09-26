@@ -10,6 +10,7 @@ exactly what is reset.
 
 - [How many workers](#how-many-workers)
 - [Static and dynamic pools](#static-and-dynamic-pools)
+- [Forking from a zygote](#forking-from-a-zygote)
 - [How a request reaches a worker](#how-a-request-reaches-a-worker)
 - [When a worker is replaced](#when-a-worker-is-replaced)
 - [Reload and stop](#reload-and-stop)
@@ -56,6 +57,101 @@ falls below the spare count.
 
 A dynamic pool costs less memory on a quiet machine; a static one never forks
 while it serves.
+
+---
+
+### Forking from a zygote
+
+```json
+{ "Q": { "webserver": { "zygote": true } } }
+```
+
+**The problem it solves.** `fork()` hands a new worker every descriptor the
+server holds at that instant, including every visitor's connection. A newly
+forked worker closes the plain ones at once. It cannot close a TLS connection:
+PHP closes TLS with `SSL_shutdown()`, which writes a close_notify alert onto the
+socket the server is still using, and the visitor's connection would end (see
+[lessons.md](lessons.md#tls-in-a-forked-child)). So the worker parks it and keeps
+the descriptor until it exits. While any worker holds a copy, the kernel cannot
+free the connection: when the visitor and the server have both finished with it,
+it sits in `CLOSE-WAIT`, held by a worker that will never use it.
+
+A static pool forks only at start, before any visitor has connected, so it never
+sees this. A **dynamic pool** forks whenever its workers become busy -- exactly
+when connections are open -- and every worker it forks keeps all of them. On an
+Exponential installation serving HTTPS with 48 spare workers, a 20-second burst
+of 355 rendered pages left up to **50** connections in `CLOSE-WAIT` held by
+workers alone, released only when those workers were retired.
+
+**How it works.** With `zygote` on, the pool forks one extra process -- the
+zygote -- at the end of starting up: after the warm-up and the first workers,
+before the server accepts its first connection. The zygote closes what a worker
+closes (the listeners, the server's end of every worker's socket pair, every
+other socket) and then only waits. Every worker the pool needs after that is
+forked by the zygote instead of the server:
+
+1. the server creates the new worker's socket pair, as it always has;
+2. it hands the worker's end to the zygote over a Unix control socket
+   (`SCM_RIGHTS`), with a deadline of five seconds for the whole hand-off;
+3. the zygote forks, the new worker takes that socket and runs the ordinary
+   worker loop, and the zygote answers with the worker's pid.
+
+The zygote never held a client connection, so its workers inherit none. They are
+otherwise the same workers: forked from the same warmed-up state, served the same
+way, replaced for the same reasons. The zygote is their parent and reaps them the
+moment they exit. Because they are not the server's children, the pool checks
+that one is alive by sending it signal `0` and reading its state in `/proc` (a
+zombie does not count), rather than with `waitpid()`, and leaves the reaping to
+the zygote. On stop, the pool asks every worker to exit, waits for them, and then
+stops the zygote.
+
+**When the zygote fails.** If a hand-off fails -- the zygote was killed, a send
+or the reply fails, or five seconds pass -- the zygote is stopped and the console
+log says so:
+
+```
+[ERROR] zygote: the zygote did not fork a worker; forking workers from the server from now on
+```
+
+From then on workers are forked from the server exactly as they are without the
+setting. No request fails on the way: workers the zygote had forked keep serving
+until their socket pairs close, and the request that needed a new worker gets
+one. A signal arriving at the server during a hand-off (a busy server takes
+`SIGCHLD` constantly) is not a failure: an interrupted call is retried within the
+same deadline.
+
+**Requirements.** PHP's `sockets` extension with `SCM_RIGHTS`, plus `pcntl` and
+`posix`, all present in the Linux builds. Without them the setting is ignored and
+workers are forked from the server. It is off by default. In Exponential it is
+set from `velocity.ini`:
+
+```ini
+[ServerSettings]
+Zygote=enabled
+```
+
+**Checking it.** The zygote is a child of the server whose own children are
+workers:
+
+```bash
+P=<server pid>
+for c in $(ps -o pid= --ppid $P); do n=$(ps -o pid= --ppid $c | wc -l); [ $n -gt 0 ] && echo "zygote $c: $n workers"; done
+```
+
+(It has no children until the pool forks its first worker after start.) To see
+connections held by workers only -- what the zygote removes -- list the
+connections on the HTTPS port and the processes holding each; any held by a pid
+other than the server's is one:
+
+```bash
+ss -Htanp '( sport = :443 )' | grep -v LISTEN | grep -v "pid=$P,"
+```
+
+With the zygote on, the installation above showed none during the same burst,
+while the zygote forked 48 workers and every request was answered.
+`tests/unit-pool-zygote.php` asserts it over real TLS, together with a killed
+worker being reaped at once, a killed zygote costing only itself, signals during
+hand-offs, and a stop leaving no process behind.
 
 ---
 
@@ -133,6 +229,7 @@ Every setting, with its default. All are under `Q.webserver`.
 | `requestTimeout` | `30` | Seconds a request may run before the client gets `504` and the worker is replaced. `0` means no limit. |
 | `workerMemoryCeiling` | `256`, or ¾ of `memory_limit` if lower | Heap size in MB past which a worker is replaced. `0` turns it off. |
 | `forkPerRequest` | `false` | One request per worker, then a fresh fork. |
+| `zygote` | `false` | Fork workers started after the pool from a zygote, so they inherit no visitor's connection. See [Forking from a zygote](#forking-from-a-zygote). |
 | `warmup` | — | A script run once in the parent before the workers are forked. See [reset.md](reset.md#warming-the-pool-in-the-parent-and-the-one-trap-in-it). |
 | `keepGlobals` | `[]` | Globals a worker keeps between requests. `--keep-globals` sets it too. |
 | `maxConnections` | `1024` | Connections open at once; beyond it the server answers `503`. |
@@ -148,7 +245,13 @@ The pool size itself is given with `--workers`.
 | `/Q/dashboard` | The Workers card (idle and busy, and the maximum of a dynamic pool) and the Worker Memory card, which reports proportional memory so shared pages are counted once. See [dashboard.md](dashboard.md). |
 | `/Q/health` | The same figures as JSON for an admin: `workers`, `workersMax`, `workersSpare`, `workerStats`. |
 | `/Q/panel`, Workers tab | Every worker with its pid, state and requests served, and the queue length. |
-| The console log | One line for each worker replaced, retried or found dead, with the reason. |
+| The console log | One line for each worker replaced, retried or found dead, with the reason, and a `zygote:` line if the pool gives up on its zygote. |
+| `ps` and `ss` | Which process forked each worker, and connections held by a worker rather than the server. See [Checking it](#forking-from-a-zygote). |
+
+A worker also remembers what it has found out about files -- whether a path
+exists, a file's mtime and size -- for the rest of a request, and with
+`Q.compat.statTtl` for a little longer. What makes it forget, and why that
+includes running another program: [compatibility.md](compatibility.md#remembered-file-facts).
 
 What carries over between requests and what a forked worker inherits: [lessons.md](lessons.md); problems that took longest to diagnose: [time-consuming-lessons.md](time-consuming-lessons.md).
 

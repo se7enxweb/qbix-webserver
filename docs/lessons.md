@@ -15,6 +15,7 @@ are written up in [time-consuming-lessons.md](time-consuming-lessons.md).
 - [The opcode cache](#the-opcode-cache)
 - [Warnings in the page](#warnings-in-the-page)
 - [TLS in a forked child](#tls-in-a-forked-child)
+- [Signals, blocking calls and a helper process](#signals-blocking-calls-and-a-helper-process)
 - [A checklist for a new application](#a-checklist-for-a-new-application)
 
 ---
@@ -66,13 +67,19 @@ at the moment of the fork is in every worker:
   reset statics at the end of the warm-up. A value that reaches a file on disk
   -- a compiled template, a cache entry -- outlives the restart too, so after
   fixing the leak, remove what it wrote.
-- **File stat memos.** The server's file wrapper remembers stats for the rest of
-  a request. It forgets the warm-up's once the warm-up ends, and again in each
-  worker straight after the fork, so a file rewritten after start is seen as it
-  is now.
+- **File stat memos.** The server's file wrapper remembers stats -- and, in a
+  pool worker, whether paths exist -- for the rest of a request, and with
+  `Q.compat.statTtl` for up to that many seconds more. It forgets the warm-up's
+  once the warm-up ends, and again in each worker straight after the fork, so a
+  file rewritten after start is seen as it is now. Inside a request it forgets
+  on a write through the wrapper, on `clearstatcache()` and after the
+  application runs another program; see
+  [compatibility.md](compatibility.md#remembered-file-facts).
 
 Plain client sockets inherited by a worker are closed in the child; TLS streams
 are handled differently -- see [TLS in a forked child](#tls-in-a-forked-child).
+With `Q.webserver.zygote` a worker forked after start inherits no client
+connection at all ([workers.md](workers.md#forking-from-a-zygote)).
 
 ---
 
@@ -166,6 +173,68 @@ record starting `\27\3\3\0\23` -- that is a close_notify:
 ```bash
 strace -f -e trace=write -p <server pid> 2>&1 | grep -F '\27\3\3\0\23'
 ```
+
+**A parked stream still holds the connection.** Parking means the worker keeps
+its copy of the descriptor. The visitor is not cut off -- the server's own
+`fclose()` sends close_notify, and a client takes that as the end of the stream
+whether or not a worker still has the socket -- but the kernel cannot free the
+connection while any process holds it. It stays in `CLOSE-WAIT` until every
+worker holding it has exited. A dynamic pool forks while connections are open,
+so on a busy HTTPS site this adds up: 50 such connections after a 20-second burst
+on one installation. The only complete answer is not to inherit them:
+`Q.webserver.zygote` forks later workers from a process that never had any.
+
+**There is no way to drop just the descriptor from PHP.** The obvious trick --
+`socket_close(socket_import_stream($tls))`, closing the raw socket underneath
+without `SSL_shutdown()` -- does not work: `socket_import_stream()` refuses a
+stream that has crypto enabled. Without FFI (which would allow libc `close()`),
+a TLS stream a PHP process inherited is closed with `SSL_shutdown()` or not at
+all.
+
+To count connections held by workers only on a running server:
+
+```bash
+ss -Htanp '( sport = :443 )' | grep -v LISTEN | grep -v "pid=<server pid>,"
+```
+
+---
+
+### Signals, blocking calls and a helper process
+
+The zygote (a helper process that forks workers on the server's behalf) worked
+in every test and then failed on the first busy installation it met. Each cause
+was a general PHP trap:
+
+- **`pcntl_signal()` restarts interrupted system calls by default.** A process
+  that spends its life blocked in `socket_recvmsg()` never runs its `SIGCHLD`
+  handler until the next message arrives, so every child that exits meanwhile
+  stays a zombie. Register such handlers with the third argument
+  (`$restart_syscalls`) set to `false`: the call returns `EINTR`, the handler
+  runs, and the loop goes round.
+- **`socket_recvmsg()` records `EINTR` in the global error, not on the socket.**
+  Most socket functions set the error on the socket; after an interrupted
+  `socket_recvmsg()`, `socket_last_error($socket)` is `0` and only
+  `socket_last_error()` (no argument) is `4`. Checking only the socket made an
+  interruption look like a failure, and the zygote left at the first worker's
+  exit. Check both.
+- **A server is interrupted all the time.** The parent's blocking read of the
+  zygote's reply was interrupted by `SIGCHLD` from its own exiting workers, and
+  the interruption was taken for a dead zygote, which the server then stopped.
+  It never showed on a test server, whose pool rarely retires workers; it showed
+  on the first burst after every start on a site with a 48-worker dynamic pool.
+  Retry interrupted calls within a deadline, and test by showering the process
+  with signals (`posix_kill($pid, SIGCHLD)` in a loop) while it works.
+- **`$ok = $a !== false and f();` does not do what it reads.** `and` binds more
+  loosely than `=`, so `$ok` gets only the comparison and `f()`'s result is
+  thrown away. Use `&&` in any assignment.
+- **`posix_kill(0, ...)` signals your whole process group.** A test that picks
+  a pid from a list and gets `0` because the list was empty kills itself, and on
+  a shared runner anything else in its group. Refuse pids below 2 before
+  signalling.
+- **A process that runs no event loop still inherits the handlers.** A process
+  forked from the server gets every signal handler the server installed. Set the
+  ones it relies on (`SIGCHLD`, `SIGTERM`) explicitly, and reset them again in
+  whatever it forks.
 
 ---
 

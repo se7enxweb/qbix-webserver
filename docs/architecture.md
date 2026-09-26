@@ -165,6 +165,37 @@ Both modes preload your framework before handling requests. The difference is wh
 - `workers` — number of persistent workers (0 = fork per request)
 - `octane` — enable snapshot restore in the worker loop (default: true when workers > 0)
 - `maxRequests` — recycle workers after this many requests (default: 1000, 0 = unlimited)
+- `zygote` — fork workers started after the pool from a zygote (default: false; see below)
+
+### Where workers come from
+
+```
+without zygote                         with Q.webserver.zygote
+--------------                         ------------------------
+server (parent)                        server (parent)
+ ├─ worker   forked at start            ├─ worker   forked at start
+ ├─ worker   forked at start            ├─ worker   forked at start
+ └─ worker   forked under load:         └─ zygote   forked at start, before
+             inherits every open             │      the first connection
+             client connection               ├─ worker  forked under load:
+                                             └─ worker  inherits none
+```
+
+Every worker is forked from warmed-up state, so it shares the application's
+memory copy-on-write. At start that is the server itself, and no visitor has
+connected yet. A dynamic pool (`spareWorkers`) also forks while it serves, and a
+worker forked then receives a copy of every connection the server has open. TLS
+connections cannot be closed in the child without ending them for the server, so
+the worker holds them until it exits, and the kernel keeps them in `CLOSE-WAIT`
+after the visitor has gone.
+
+With `zygote` on, those later forks are made by the zygote, a process forked at
+the end of start-up -- after the warm-up, before the first `accept()` -- that
+has closed every socket but a control socket to the server. The server passes it
+the new worker's end of a socket pair (`SCM_RIGHTS`) and gets the pid back; the
+zygote reaps its workers, and the pool watches them with signal `0` and `/proc`
+instead of `waitpid()`. If the zygote fails, the pool logs it and forks from the
+server again. Details and checks: [workers.md](workers.md#forking-from-a-zygote).
 
 ## 💡 The mental model
 

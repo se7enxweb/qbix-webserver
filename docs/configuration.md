@@ -28,8 +28,8 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 
 | Key | Default | What it does |
 |---|---|---|
-| `keepAlive.max` | 100 | Max requests per keep-alive connection |
-| `keepAlive.timeout` | 15 | Seconds before closing idle connection |
+| `keepAlive.max` | 100 | Max requests per keep-alive connection. The last one is answered with `Connection: close`, and so is any `5xx`; the header always says what the server does next. See [http.md](http.md#keep-alive) |
+| `keepAlive.timeout` | 15 | Seconds before closing an idle connection |
 | `maxConnections` | 1024 | Max simultaneous connections |
 | `fileCache.maxSize` | 64MB | Total memory for cached file responses |
 | `fileCache.maxFile` | 1MB | Largest file to cache in memory |
@@ -56,6 +56,8 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `webserver.scripts` | (all) | Scripts that run when asked for by name, relative to the root (`["/index.php"]`). Any other `.php` goes to the front controller. See [Only the entry points run](#only-the-entry-points-run) |
 | `web.static.paths` | (all) | Patterns on a file's path below the root; only a matching file is sent as it is, any other goes to the front controller. See [Only the entry points run](#only-the-entry-points-run) |
 | `webserver.frontControllers` | `{}` | Path patterns to scripts, checked in order (`{"^/api/": "index_rest.php"}`); anything else goes to `index.php` |
+| `webserver.zygote` | `false` | Fork workers started after the pool from a zygote -- a process forked before the first connection was accepted -- so a worker forked under load inherits no visitor's connection. Needs the `sockets` extension (SCM_RIGHTS), `pcntl` and `posix`; ignored without them, and if the zygote fails the pool forks from the server as before. See [workers.md](workers.md#forking-from-a-zygote) |
+| `compat.statTtl` | `0` | Seconds (at most 10) a worker keeps what it knows about files -- whether a path exists, a file's mtime and size -- across requests, like `opcache.revalidate_freq`. `0` forgets at every request boundary. The worker's own writes, `clearstatcache()` and a program it runs are seen at once either way. See [compatibility.md](compatibility.md#remembered-file-facts) |
 
 ### Virtual hosts
 

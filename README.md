@@ -42,6 +42,11 @@ need to actually run it in production:
 - **Built to stay up.** A worker pool that sizes itself to available RAM, a
   design where a worker dying never fails a request, correct TLS shutdown from
   forked workers, and safe operation under opcache.
+- **No stuck connections from a growing pool.** With `Q.webserver.zygote`, workers
+  forked under load come from a process that never held a visitor's connection,
+  so none is kept open in `CLOSE-WAIT` by a worker; honest `Connection` headers at
+  the keep-alive limit; and file facts remembered per request (optionally a little
+  longer with `Q.compat.statTtl`) to cut CPU per rendered page.
 - **Optional peer-to-peer mesh and mobile transports** (experimental, off by
   default) for BLE/Wi-Fi device meshes.
 - **Proven across platforms.** A CI matrix boots the server on Linux, the BSDs,
@@ -62,7 +67,7 @@ Instead of making each worker do more, Qbix runs more workers. The server loads 
 
 Your code runs unmodified, in two modes:
 
-**Persistent workers (default)** — workers stay alive across requests. Between each request, a Reflection-based snapshot restores all static properties in 0.03ms. 38 PHP functions (`header()`, `session_start()`, `ini_set()`, `set_error_handler()`, etc.) are shimmed via source transformation so they reset correctly. This is how you get 2,294 req/s on CPU-bound work and 1,060 req/s under I/O.
+**Persistent workers (default)** — workers stay alive across requests. Between each request, a Reflection-based snapshot restores all static properties in 0.03ms. 44 PHP functions (`header()`, `session_start()`, `ini_set()`, `set_error_handler()`, etc.) are shimmed via source transformation so they reset correctly. This is how you get 2,294 req/s on CPU-bound work and 1,060 req/s under I/O.
 
 **Fork-per-request** — if persistent mode doesn't work for your code (functions with internal static variables, plugins that register global state in ways the shim can't track), set `forkPerRequest: true`. Each request gets a fresh fork. It's slower than persistent mode, but each forked worker still costs only 120KB instead of 50MB, so you can run 100× more of them than fpm on the same hardware. That's the whole point — blocking I/O doesn't matter when you have enough workers, and COW makes "enough workers" nearly free.
 
@@ -176,7 +181,7 @@ php qbixserver.phar --root=./web
 
 ## Use With Your Existing Codebase
 
-If you already have a PHP app running on nginx + php-fpm, switching is one command. The server reads your `.htaccess`, rewrites URLs to your front controller, and runs your code with 38 functions shimmed so static variables, sessions, and headers work correctly between requests.
+If you already have a PHP app running on nginx + php-fpm, switching is one command. The server reads your `.htaccess`, rewrites URLs to your front controller, and runs your code with 44 functions shimmed so static variables, sessions, and headers work correctly between requests.
 
 **Laravel:**
 
@@ -231,7 +236,7 @@ Each preset sets framework-appropriate defaults: the front controller path, uplo
 
 ### What gets shimmed
 
-The server intercepts 38 PHP functions (`header()`, `session_start()`, `setcookie()`, `ini_set()`, etc.) via source transformation at include time. Your code calls `header()` and it works — the server captures it. Between requests, all static properties are restored from a snapshot in 0.03ms. See [Compatibility](docs/compatibility.md) for the full list.
+The server intercepts 44 PHP functions (`header()`, `session_start()`, `setcookie()`, `ini_set()`, `file_exists()`, `exec()`, etc.) via source transformation at include time. Your code calls `header()` and it works — the server captures it. Between requests, all static properties are restored from a snapshot in 0.03ms. See [reset.md](docs/reset.md) for the full list and [Compatibility](docs/compatibility.md#remembered-file-facts) for what the file functions remember.
 
 ### What to watch for
 

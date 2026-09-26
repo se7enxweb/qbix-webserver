@@ -65,6 +65,83 @@ Third-party code — WordPress, a vendored SDK, anything not written for Qbix �
 
 `Q_Response::setCookie()` works in both modes (the Platform declares it too). The server reads `Q_Response::$cookies` — a `public static` property on both implementations — and emits the `Set-Cookie` headers itself.
 
+## Remembered file facts
+
+To make `header()`, `exit` and the rest work under the CLI SAPI, the server
+rewrites the PHP it includes and replaces PHP's `file://` stream handler with its
+own (`Q_WebServer_CompatFileWrapper`). Every file operation the application makes
+then runs through PHP code instead of C: an include, a `file_exists()`, an
+`fopen()`. A content management system asks about the same files again and again
+while it renders one page -- on the front page of an Exponential installation, 2600
+existence checks about 700 distinct paths -- so what the wrapper has already found
+out is remembered.
+
+### What a worker remembers, and until when
+
+A pool worker remembers, for the rest of the request:
+
+- a file's full stat and, for an include, its mtime and size;
+- whether a path exists and whether it is a directory (the answer `file_exists()`,
+  `is_dir()` and `is_file()` give, since the transform sends those three to the
+  wrapper);
+- the bytes of an included file and its transformed source, checked against the
+  remembered mtime and size before use.
+
+All of it is forgotten -- at once, not at the end of the request -- when:
+
+| Event | Why it must forget |
+|---|---|
+| A file is written, renamed, removed or touched through the wrapper, or a directory created or removed | The answer it had is now wrong. |
+| The application calls `clearstatcache()` | That is exactly what the call asks for. Exponential's `eZFSFileHandler::loadMetaData($force)` does it before looking at a cache file another request may have regenerated. |
+| The application runs another program: `exec()`, `system()`, `passthru()`, `shell_exec()`, `proc_close()` or `pclose()` | The program can create, change or remove files the wrapper never sees. Exponential makes image variations with ImageMagick through `system()` and then checks for the file it expects; a remembered "not there" would call the new image missing. |
+| The request ends | Unless `Q.compat.statTtl` says to keep them a little longer (below). |
+| A worker is forked | What the parent knew describes the moment of the fork. A new worker always starts with nothing remembered. |
+
+The six process functions are rewritten by the same transform that rewrites
+`header()`: the call goes to a shim (`Q_WebServer_Compat::_exec()` and so on) that
+runs the real function with the same arguments -- output arrays and exit codes
+passed back unchanged -- and then forgets. Only global calls are rewritten: a
+method that happens to be called `exec()` (`$pdo->exec()`, `PDO::exec()`,
+`$s?->system()`) is left alone. A shell command in backticks is not a function
+call and is not seen; use `shell_exec()` in code that creates files and then
+checks for them.
+
+Existence answers are remembered **only in pool workers**, which have a request
+boundary to forget at. The server process keeps the wrapper for its whole life and
+has no such boundary, so it asks every time: a remembered "not there" in the
+server would never be forgotten (the response cache's generation marker, created
+after the first look, was never seen when it did).
+
+Measured on an Exponential front page (one request at a time, six alternating
+rounds against the engine without it): real existence checks went from 2605 to
+696 per page, and CPU per rendered page fell by about 5%.
+`tests/unit-compat-existence-memo.php` covers every rule above.
+
+### Keeping them across requests: `Q.compat.statTtl`
+
+```json
+{ "Q": { "compat": { "statTtl": 1 } } }
+```
+
+`statTtl` is the number of seconds, at most 10, that a worker keeps what it knows
+about files across request boundaries -- the same trade `opcache.revalidate_freq`
+makes for compiled scripts. It is `0` by default, which forgets at every boundary.
+
+With a TTL, everything in the table above still forgets at once, except the end of
+a request: the worker's own writes, `clearstatcache()` and a program it ran are
+seen immediately. Only a change made by **another process** -- another worker, a
+web server sharing the files (Apache next to Velocity), an editor, a deploy -- can
+go unseen, for at most the TTL. A freshly forked worker forgets regardless.
+
+Measured on the same page with `statTtl` set to `1`: about 13% less CPU per
+rendered page, lower in all six rounds. Exponential sets it from `velocity.ini`
+`[ServerSettings] StatTtl`.
+
+Set it when files change through deploys and the application itself, and a change
+made by hand showing up to a second later is acceptable. Leave it at `0` while
+developing against files an editor is changing, or when another process writes
+files the application must see the instant they appear.
+
 ## Tests
 
 Five test suites, 152 tests total:
