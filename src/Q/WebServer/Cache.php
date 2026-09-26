@@ -980,15 +980,23 @@ class Q_WebServer_Cache
 	 * @method purge
 	 * @static
 	 * @param {string} $pattern URL path or regex
+	 * @param {boolean|null} [$isRegex=null] true: $pattern is a regex; false:
+	 *   an exact URL, even one that starts and ends with "/" (which the guess
+	 *   below takes for a regex, so "/blog/" would purge every URL containing
+	 *   "blog"); null: guessed, as before
+	 * @return {integer} how many stored entries were removed
 	 */
-	static function purge($pattern)
+	static function purge($pattern, $isRegex = null)
 	{
-		if (!self::$dir || !is_dir(self::$dir)) return;
+		if (!self::$dir || !is_dir(self::$dir)) return 0;
 		self::memorySignal();
+		$removed = 0;
 
 		// If it looks like a regex (starts with a delimiter), match against files
-		$isRegex = (strlen($pattern) > 2 && $pattern[0] === $pattern[strlen($pattern)-1])
-			|| (strlen($pattern) > 2 && $pattern[0] === '#');
+		if ($isRegex === null) {
+			$isRegex = (strlen($pattern) > 2 && $pattern[0] === $pattern[strlen($pattern)-1])
+				|| (strlen($pattern) > 2 && $pattern[0] === '#');
+		}
 
 		$files = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator(self::$dir, RecursiveDirectoryIterator::SKIP_DOTS)
@@ -1002,7 +1010,7 @@ class Q_WebServer_Cache
 			if ($url === '') continue;
 			$match = $isRegex ? preg_match($pattern, $url) : ($url === $pattern);
 			if ($match) {
-				@unlink($file->getPathname());
+				if (@unlink($file->getPathname())) $removed++;
 				if (self::$apcuEnabled) {
 					// The key as it was filed, not one derived from the URL.
 					// One URL has as many entries as it has content-codings,
@@ -1020,6 +1028,26 @@ class Q_WebServer_Cache
 				}
 			}
 		}
+		return $removed;
+	}
+
+	/**
+	 * Where the entry filed under $key is held right now: in this process's
+	 * memory layer, in APCu, on disk. For the control panel's entry browser;
+	 * reads nothing but existence.
+	 * @method heldIn
+	 * @static
+	 * @param {string} $key
+	 * @return {array} memory, apcu, disk => boolean
+	 */
+	static function heldIn($key)
+	{
+		$path = self::filePath($key);
+		return array(
+			'memory' => self::memoryActive() && isset(self::$memory[$key]),
+			'apcu' => self::$apcuEnabled && function_exists('apcu_exists') && apcu_exists('qcache:' . $key),
+			'disk' => $path !== null && is_file($path),
+		);
 	}
 
 	/**
