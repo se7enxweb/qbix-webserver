@@ -53,6 +53,7 @@ jobs:
   bsd:
     name: ${{ matrix.os }} ${{ matrix.version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -158,6 +159,7 @@ jobs:
   linux-arch:
     name: linux/${{ matrix.platform }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -201,6 +203,7 @@ jobs:
   musl:
     name: alpine ${{ matrix.platform }} (musl)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -234,6 +237,7 @@ jobs:
     # already applies to this job; the name suffix makes an expected red read as such.
     name: ${{ matrix.os }}${{ matrix.experimental && ' (experimental)' || '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -288,6 +292,7 @@ jobs:
   haiku:
     name: haiku x86_64 (experimental)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
     if: github.event_name == 'workflow_dispatch'
 
