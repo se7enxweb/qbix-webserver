@@ -1518,7 +1518,8 @@
                 "fastlz"
             ],
             "unavailable": {
-                "windows-x64": "On Windows, yac's bundled igbinary serializer breaks redis' igbinary detection (\"Cannot build redis; igbinary not enabled\"), and redis is in the standard set"
+                "windows-x64": "On Windows, yac's bundled igbinary serializer breaks redis' igbinary detection (\"Cannot build redis; igbinary not enabled\"), and redis is in the standard set",
+                "linux-aarch64": "With the static musl aarch64 toolchain, yac finds no atomic compare-and-swap and stops the build (\"#error No atomic CAS support\" in storage/yac_atomic.h)"
             }
         },
         "yaml": {
