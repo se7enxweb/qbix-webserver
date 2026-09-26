@@ -70,7 +70,7 @@ check('Vary not repeated', $h, array('Vary' => 'Cookie, accept-encoding'));
 // the file at run time, so they cannot drift from it.
 $src = file_get_contents(__DIR__ . '/../src/Q/WebServer.php');
 $methods = '';
-foreach (array('sendResponse', 'http1Head', 'headerLines') as $name) {
+foreach (array('sendResponse', 'connectionHeader', 'http1Head', 'headerLines') as $name) {
 	if (!preg_match('/\n\tstatic function ' . $name . '\(.*?\n\t\}\n/s', $src, $m)) {
 		fwrite(STDERR, "  FAIL - $name() not found in src/Q/WebServer.php\n");
 		exit(1);
@@ -78,6 +78,7 @@ foreach (array('sendResponse', 'http1Head', 'headerLines') as $name) {
 	$methods .= $m[0];
 }
 eval('class Q_WS_Copy { static $lastStatus; static $lastBody; static $lastBytes; static $compressFor = null;
+	static $requestKeepAlive = true;
 	static function writeAll($c, $d) { return fwrite($c, $d) === strlen($d); }' . $methods . '}');
 
 function send($compressFor, $status, $body, $type, $extra = array())
@@ -120,6 +121,13 @@ list($f, $out) = send(array(), 200, $page, 'text/html');
 check('a client that does not ask gets it plain', array(isset($f['content-encoding']), $out === $page), array(false, true));
 list($f, $out) = send(null, 200, $page, 'text/html');
 check('outside /Q/ nothing changes here', array(isset($f['content-encoding']), $out === $page), array(false, true));
+
+// The Connection header follows the request's keep-alive decision.
+check('a request that may stay open says keep-alive', $f['connection'] ?? null, array('keep-alive'));
+Q_WS_Copy::$requestKeepAlive = false;
+list($f, $out) = send(null, 200, $page, 'text/html');
+Q_WS_Copy::$requestKeepAlive = true;
+check('the last one before keepAlive.max says close', $f['connection'] ?? null, array('close'));
 
 if ($fail) { printf("\n  FAIL - %d of %d case(s)\n", $fail, $pass + $fail); exit(1); }
 printf("  PASS - %d case(s)\n", $pass);

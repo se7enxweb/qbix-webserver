@@ -2163,6 +2163,11 @@ class Q_WebServer
 			&& self::$keepAliveCount[$key] < $maxKeepAlive;
 		// Propagate into headers array so processResponse can access it
 		$parsed['headers']['_keepAlive'] = $parsed['_keepAlive'];
+		// And to sendResponse(), which the cache hit, the static and error
+		// pages and every other synchronous answer go through without the
+		// parsed request in hand. Reset in the finally below, so a response
+		// written later from a callback keeps the old default.
+		self::$requestKeepAlive = $parsed['_keepAlive'];
 
 		try {
 			$savedRoot = self::$rootDir;
@@ -2184,6 +2189,7 @@ class Q_WebServer
 			}
 			return;
 		} finally {
+			self::$requestKeepAlive = true;
 			// Restore rootDir after vhost override
 			if (self::$rootDir !== $savedRoot) {
 				self::$rootDir = $savedRoot;
@@ -5673,6 +5679,29 @@ WORKER;
 	 */
 	static $compressFor = null;
 
+	/**
+	 * The Connection header that tells the truth about what happens next.
+	 *
+	 * After answering, the server keeps the connection only when the request
+	 * allowed it and the status is below 500 (see the keep-alive decision in
+	 * onClientData). sendResponse() used to say "keep-alive" regardless, so
+	 * the last response before keepAlive.max -- the 1000th on a connection,
+	 * as configured here -- promised a connection the server then closed. A
+	 * client that believed it sent its next request into a closed socket:
+	 * ApacheBench counted about one "Length" or "Exception" failure per
+	 * thousand requests, and a proxy reusing the connection gets an error.
+	 *
+	 * @method connectionHeader
+	 * @static
+	 * @param {boolean} $keepAlive whether this request may keep the connection
+	 * @param {integer} $status the response status
+	 * @return {string} "keep-alive" or "close"
+	 */
+	static function connectionHeader($keepAlive, $status)
+	{
+		return ($keepAlive && $status < 500) ? 'keep-alive' : 'close';
+	}
+
 	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
 	{
 		static $reasons = array(
@@ -5687,7 +5716,7 @@ WORKER;
 		self::$lastStatus = $status;
 		self::$lastBody = $body;
 		$body = (string) $body;
-		$conn = $extra['Connection'] ?? 'keep-alive';
+		$conn = $extra['Connection'] ?? self::connectionHeader(self::$requestKeepAlive, $status);
 		unset($extra['Connection']);
 		if (!is_array($extra)) $extra = array();
 		// The server's own pages: HTML, CSS, JavaScript and JSON compressed
@@ -6564,6 +6593,7 @@ WORKER;
 	private static $lastStatus = 200;
 	private static $lastBody = '';
 	private static $lastBytes = 0;
+	private static $requestKeepAlive = true;   // the current request's keep-alive decision, for sendResponse()
 
 	// ── Response state (internal — not Q_Response, to avoid Platform collision) ──
 
