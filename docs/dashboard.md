@@ -46,10 +46,21 @@ The `/Q/stats` JSON includes everything the dashboard shows, plus `sparkline` (6
   of workers rather than reading `/proc` for every one, which at scale would
   stall the event loop that serves the dashboard.
 - **System RAM** is used = Total − MemAvailable (reclaimable cache counts as
-  free, as `free` reports it), and it **also shows swap when any is in use** —
-  and tints red then, however low the RAM percentage looks. A box can sit at a
-  comfortable 42% while it has pushed gigabytes to disk under earlier pressure,
-  which the percentage alone hides.
+  free, as `free` reports it). When the host has swap it adds
+  **swap used / total** — `swap 8.7 GB / 12 GB` — coloured by what actually
+  slows the server rather than by how much is parked there:
+
+  | Colour | When | Why |
+  |---|---|---|
+  | dim | swap in use but idle | pages moved out earlier and not needed back cost nothing |
+  | amber | 1 MB/s or more read back from swap, or swap 90% full | the box is short of memory, or has nowhere left to move pages |
+  | red | 10 MB/s or more read back from swap | requests are waiting on disk |
+
+  While pages are coming back the rate is shown too (`, 12.5 MB/s in`), and
+  hovering the swap figure says in plain words which case it is. The rate is
+  `pswpin` from `/proc/vmstat`, sampled with the stats (at most once a second)
+  and reported as `systemRam.swapInKBps` in `/Q/health`; it is `null` until
+  there are two samples, and then only fullness decides the colour.
 - **Durations** — the slowest-request figure and every row in the live log — are
   rounded to one decimal; a `microtime()` difference is otherwise thirteen.
 - **The live log** carries column headings, and the **status filter** lists every

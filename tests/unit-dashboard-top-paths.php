@@ -13,8 +13,10 @@
  * its own truncating element, escaped.
  *
  * System RAM is coloured by severity: the percentage green under 70%, amber
- * from 70%, red from 90%; the swap part dim when nothing is swapped, amber
- * when some is, red above half of the swap total.
+ * from 70%, red from 90%. The swap part reads "swap used / total" and is
+ * coloured by what hurts, not by how much is parked: dim while swap is idle
+ * (cold pages cost nothing), amber from 1 MB/s read back or 90% full, red
+ * from 10 MB/s read back. Its tooltip says which, in plain words.
  *
  * Both cards are rendered twice: by PHP for the first paint, and by the page
  * script on every live refresh. This runs the PHP helpers directly, then runs
@@ -93,17 +95,28 @@ check('70% is warn (amber)', $D::ramLevel(70), 'warn');
 check('89.9% is warn', $D::ramLevel(89.9), 'warn');
 check('90% is crit (red)', $D::ramLevel(90), 'crit');
 check('swap 0 is neutral', $D::swapLevel(0, 8192), 'none');
-check('swap in use is amber', $D::swapLevel(4813, 16384), 'warn');
-check('swap in use, total unknown, is amber', $D::swapLevel(10, 0), 'warn');
-check('swap above half the total is red', $D::swapLevel(5000, 8192), 'crit');
+check('swap in use but idle is neutral, not a warning', $D::swapLevel(4813, 16384, 0), 'none');
+check('swap in use, no rate yet, not nearly full, is neutral', $D::swapLevel(4813, 16384), 'none');
+check('swap in use, total unknown, is neutral', $D::swapLevel(10, 0), 'none');
+check('swap above half the total alone is not red', $D::swapLevel(5000, 8192, 0), 'none');
+check('swap 90% full is amber', $D::swapLevel(7400, 8192, 0), 'warn');
+check('1 MB/s read back is amber', $D::swapLevel(4813, 16384, 1024), 'warn');
+check('10 MB/s read back is red', $D::swapLevel(4813, 16384, 10240), 'crit');
+check('a trickle read back stays neutral', $D::swapLevel(4813, 16384, 300), 'none');
 check('severity classes use only the existing palette',
 	strpos($dash, '.sev-ok{color:var(--grn)}.sev-warn{color:var(--yel)}.sev-crit{color:var(--red)}.sev-none{color:var(--dim)}') !== false, true);
 
 $ram = array('totalMb' => 47923, 'usedMb' => 18944, 'percent' => 40,
-	'swapTotalMb' => 16384, 'swapUsedMb' => 4813);
+	'swapTotalMb' => 16384, 'swapUsedMb' => 4813, 'swapInKBps' => 300);
 check('the percentage takes its colour', $D::ramPercentHtml($ram), '<span class="sev-ok">40%</span>');
-check('the detail text is unchanged, the swap part in its own span', $D::ramDetailHtml($ram),
-	'18.5 / 46.8 GB &#183; <span class="sev-warn">4.7 GB swap</span>');
+check('swap reads used / total, neutral while idle, with a tooltip', $D::ramDetailHtml($ram),
+	'18.5 / 46.8 GB &#183; <span class="sev-none" title="Memory the kernel moved out earlier and has not needed back.'
+	. ' It costs nothing while it stays there; it only slows the server when pages are read back in (now 300 KB/s).">swap 4.7 GB / 16 GB</span>');
+check('while pages come back, the rate is shown and the tooltip says why',
+	$D::ramDetailHtml(array('totalMb' => 47923, 'usedMb' => 18944, 'percent' => 40,
+		'swapTotalMb' => 16384, 'swapUsedMb' => 4813, 'swapInKBps' => 12800)),
+	'18.5 / 46.8 GB &#183; <span class="sev-crit" title="Pages are being read back from swap at 12.5 MB/s:'
+	. ' the server is short of memory and slows down while it waits on disk.">swap 4.7 GB / 16 GB, 12.5 MB/s in</span>');
 check('no swap figures, no swap part',
 	$D::ramDetailHtml(array('totalMb' => 16384, 'usedMb' => 8192, 'percent' => 50)), '8 / 16 GB');
 check('the first paint fills the RAM card server-side',
@@ -114,6 +127,9 @@ $rams = array(
 	array('totalMb' => 16384, 'usedMb' => 11469, 'percent' => 70, 'swapTotalMb' => 2048, 'swapUsedMb' => 0),
 	array('totalMb' => 16384, 'usedMb' => 15000, 'percent' => 92, 'swapTotalMb' => 2048, 'swapUsedMb' => 1500),
 	array('totalMb' => 16384, 'usedMb' => 8000, 'percent' => 49, 'swapTotalMb' => 2048, 'swapUsedMb' => 300),
+	array('totalMb' => 16384, 'usedMb' => 8000, 'percent' => 49, 'swapTotalMb' => 2048, 'swapUsedMb' => 1900, 'swapInKBps' => 0),
+	array('totalMb' => 16384, 'usedMb' => 15000, 'percent' => 92, 'swapTotalMb' => 2048, 'swapUsedMb' => 1500, 'swapInKBps' => 2048),
+	array('totalMb' => 16384, 'usedMb' => 15000, 'percent' => 92, 'swapUsedMb' => 700, 'swapInKBps' => 20480),
 	array('totalMb' => 16384, 'usedMb' => 8192, 'percent' => 50),
 );
 
@@ -145,7 +161,7 @@ $node = findNode();
 if (!$node or !function_exists('proc_open')) {
 	printf("  skip  node not found; script copies checked by source only\n");
 } else {
-	$names = array('esc', 'fmtMs', 'tpRow', 'ramLevel', 'swapLevel', 'ramPct', 'ramDetail');
+	$names = array('esc', 'fmtMs', 'tpRow', 'ramLevel', 'swapLevel', 'n1', 'fmtRate', 'fmtSwapMb', 'swapTitle', 'ramPct', 'ramDetail');
 	$js = '';
 	foreach ($names as $n) {
 		$f = jsFunction($dash, $n);
@@ -156,13 +172,14 @@ if (!$node or !function_exists('proc_open')) {
 		'ms' => array(3636.2, 593.7, 10.6, 12, 1000, 999.96),
 		'rows' => $rows,
 		'pct' => array(69.9, 70, 89.9, 90),
-		'swap' => array(array(0, 8192), array(4813, 16384), array(10, 0), array(5000, 8192)),
+		'swap' => array(array(0, 8192), array(4813, 16384, 0), array(10, 0), array(5000, 8192, 0),
+			array(7400, 8192, 0), array(4813, 16384, 1024), array(4813, 16384, 10240), array(4813, 16384, null)),
 		'rams' => $rams,
 	);
 	$js .= 'var C=' . json_encode($cases) . ";\n"
 		. 'process.stdout.write(JSON.stringify({'
 		. 'ms:C.ms.map(fmtMs),rows:C.rows.map(tpRow),pct:C.pct.map(ramLevel),'
-		. 'swap:C.swap.map(function(a){return swapLevel(a[0],a[1])}),'
+		. 'swap:C.swap.map(function(a){return swapLevel(a[0],a[1],a[2])}),'
 		. 'ramPct:C.rams.map(ramPct),ramDetail:C.rams.map(ramDetail)}));';
 
 	$proc = proc_open(array($node), array(0 => array('pipe', 'r'),
@@ -182,7 +199,10 @@ if (!$node or !function_exists('proc_open')) {
 		check('script tpRow matches PHP, escaping included',
 			$got['rows'], array_map(array($D, 'topPathRow'), $rows));
 		check('script ramLevel matches PHP', $got['pct'], array('ok', 'warn', 'warn', 'crit'));
-		check('script swapLevel matches PHP', $got['swap'], array('none', 'warn', 'warn', 'crit'));
+		check('script swapLevel matches PHP', $got['swap'], array_map(function ($a) use ($D) {
+			return $D::swapLevel($a[0], $a[1], $a[2] ?? null); }, $cases['swap']));
+		check('script swapLevel: idle, full, 1 MB/s, 10 MB/s', $got['swap'],
+			array('none', 'none', 'none', 'none', 'warn', 'warn', 'crit', 'none'));
 		check('script ramPct matches PHP', $got['ramPct'], array_map(array($D, 'ramPercentHtml'), $rams));
 		check('script ramDetail matches PHP', $got['ramDetail'], array_map(array($D, 'ramDetailHtml'), $rams));
 	}

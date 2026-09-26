@@ -271,18 +271,27 @@ function el(id,v){var e=document.getElementById(id);if(e)e.innerHTML=v}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 // Top paths and System RAM helpers. Each mirrors a PHP method of the same
 // name in Q_WebServer_Dashboard, which renders the first paint, so the two
-// must stay in step: fmtMs, tpRow (topPathRow), ramLevel, swapLevel,
+// must stay in step: fmtMs, tpRow (topPathRow), ramLevel, swapLevel, swapTitle, fmtRate, fmtSwapMb,
 // ramPct (ramPercentHtml), ramDetail (ramDetailHtml).
 function fmtMs(ms){ms=+ms||0;var r=Math.round(ms*10)/10;if(r<1000)return r+' ms';return(ms/1000).toFixed(2)+' s'}
 function tpRow(p){var h=esc(String(p.path));return'<div class="tp"><span class="p" title="'+h+'">'+h+
 '</span><span class="c">'+(parseInt(p.count,10)||0)+' req</span><span class="a">'+fmtMs(p.avgMs)+' avg</span></div>'}
 function ramLevel(pc){pc=+pc||0;return pc>=90?'crit':(pc>=70?'warn':'ok')}
-function swapLevel(u,t){u=+u||0;t=+t||0;if(u<=0)return'none';return(t>0&&u>t/2)?'crit':'warn'}
+function swapLevel(u,t,k){u=+u||0;t=+t||0;k=(k===null||k===undefined)?null:+k;if(u<=0)return'none';if(k!==null&&k>=10240)return'crit';if(k!==null&&k>=1024)return'warn';if(t>0&&u>=t*0.9)return'warn';return'none'}
+function n1(v){return Math.round((+v||0)*10)/10}
+function fmtRate(k){k=+k||0;return k<1024?Math.round(k)+' KB/s':n1(k/1024)+' MB/s'}
+function fmtSwapMb(m){m=+m||0;return(m>0&&m<1024)?Math.round(m)+' MB':n1(m/1024)+' GB'}
+function swapTitle(u,t,k){var l=swapLevel(u,t,k);k=(k===null||k===undefined)?null:+k;
+if((+u||0)<=0)return'Nothing is in swap.';
+if(l==='crit'||(l==='warn'&&k!==null&&k>=1024))return'Pages are being read back from swap at '+fmtRate(k)+': the server is short of memory and slows down while it waits on disk.';
+if(l==='warn')return'Swap is nearly full: if memory runs short now, the kernel has nowhere left to move pages and may stop processes.';
+return'Memory the kernel moved out earlier and has not needed back. It costs nothing while it stays there; it only slows the server when pages are read back in'+(k===null?'':' (now '+fmtRate(k)+')')+'.'}
 function ramPct(r){return'<span class="sev-'+ramLevel(r.percent)+'">'+(parseInt(r.percent,10)||0)+'%</span>'}
 function ramDetail(r){
 var o=Math.round((r.usedMb||0)/1024*10)/10+' / '+Math.round((r.totalMb||0)/1024*10)/10+' GB';
-var st=+r.swapTotalMb||0,sw=+r.swapUsedMb||0;
-if(st>0||sw>0){o+=' &#183; <span class="sev-'+swapLevel(sw,st)+'">'+((sw>0&&sw<1024)?Math.round(sw)+' MB':Math.round(sw/1024*10)/10+' GB')+' swap</span>'}
+var st=+r.swapTotalMb||0,sw=+r.swapUsedMb||0,k=(r.swapInKBps===null||r.swapInKBps===undefined)?null:+r.swapInKBps;
+if(st>0||sw>0){var a='swap '+fmtSwapMb(sw)+(st>0?' / '+fmtSwapMb(st):'');if(k!==null&&k>=1024)a+=', '+fmtRate(k)+' in';
+o+=' &#183; <span class="sev-'+swapLevel(sw,st,k)+'" title="'+swapTitle(sw,st,k)+'">'+a+'</span>'}
 return o}
 
 function fmtMem(b){
