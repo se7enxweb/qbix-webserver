@@ -59,9 +59,35 @@ class Q_WebServer_Dashboard
 	/** @var float when stats last went out with a request entry */
 	static $statsSentAt = 0.0;
 
+	/** @var int /Q/ requests left out because Q.dashboard.hidePanelRequests is on */
+	static $hiddenPanelRequests = 0;
+
+	/**
+	 * Whether a request is the server's own and is to be left out of the
+	 * dashboard: Q.dashboard.hidePanelRequests is on and the path is under
+	 * /Q/ -- the dashboard and its WebSocket, the panel and its API, health,
+	 * stats, metrics, the server's icons. Off by default, so the figures count
+	 * every request, as they always have.
+	 */
+	static function hidesRequest($uri)
+	{
+		if (strncmp((string) $uri, '/Q/', 3) !== 0) return false;
+		return class_exists('Q_Config', false)
+			and (bool) Q_Config::get('Q', 'dashboard', 'hidePanelRequests', false);
+	}
+
 	static function recordRequest($method, $uri, $status, $ms, $bytes = 0,
 		$isPhp = false, $contentType = '', $memUsed = 0, $cookies = array())
 	{
+		// The page watching the traffic is traffic too: with a dashboard open
+		// its own polling and panel calls fill the live log and top paths.
+		// Left out entirely when asked -- counts, top paths, live log -- and
+		// counted apart, so nothing disappears without a trace.
+		if (self::hidesRequest($uri)) {
+			self::$hiddenPanelRequests++;
+			return;
+		}
+
 		self::$stats['requests']++;
 		self::$stats['totalMs'] += $ms;
 		self::$stats['bytesOut'] += $bytes;
@@ -234,6 +260,7 @@ class Q_WebServer_Dashboard
 		return array(
 			'uptime' => self::fmtUp($up), 'uptimeSec' => $up,
 			'requests' => $reqs,
+			'hiddenPanelRequests' => self::$hiddenPanelRequests,
 			'rps' => $rps, 'currentRps' => $currentRps,
 			'avgMs' => $avgMs,
 			// Rounded here rather than where it is displayed. microtime()

@@ -56,6 +56,26 @@ The `/Q/stats` JSON includes everything the dashboard shows, plus `sparkline` (6
   code the server has recorded since start, not only those that streamed past
   after the page opened.
 
+### Hiding the panel's own requests
+
+An open dashboard or panel makes requests of its own -- its WebSocket, the
+panel's API calls, `/Q/health` from a monitor, the server's icons -- and by
+default they are counted like any other: they fill the live log and the top
+paths and add to requests per second, so on a quiet site the page mostly shows
+itself. To see only the site's traffic:
+
+```json
+{ "Q": { "dashboard": { "hidePanelRequests": true } } }
+```
+
+Every request whose path starts with `/Q/` is then left out of the dashboard
+entirely -- counts, status codes, top paths, the live log -- and counted apart:
+the live log's heading reads *"1,204 total · 318 panel /Q/ requests hidden"*, and
+`/Q/health` reports `hiddenPanelRequests`. Only the dashboard is affected: the
+access log, `/Q/metrics` and the traffic figures per domain still record every
+request. A path that merely contains `/Q/` further in (`/blog/Q/notes`) is the
+site's and is still shown. Off by default.
+
 ---
 
 ## ⚙️ Control Panel

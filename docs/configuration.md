@@ -44,6 +44,7 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `webserver.debug` | false | What an uncaught error in a request shows in its 500 response: the message only, or with `true` (or `--debug`) also its class, file and line, the trace and every previous exception. The error log always gets the file and line of each exception in the chain. Off by default, because it puts server paths in a response |
 | `dashboard` | (enabled) | Set to `false` to disable `/Q/dashboard`, `/Q/health`, and `/Q/ws` entirely |
 | `dashboard.token` | (none) | When set, dashboard requires `?token=VALUE` in the URL |
+| `dashboard.hidePanelRequests` | false | Leave the server's own `/Q/` requests (the dashboard and panel themselves, health checks, icons) out of the dashboard's counts, top paths and live log. See [dashboard.md](dashboard.md#hiding-the-panels-own-requests) |
 | `autoload.psr-4` | `{}` | PSR-4 namespace mappings: `{"App\\": "src/"}` |
 | `autoload.psr-0` | `{}` | PSR-0 prefix mappings: `{"Legacy_": "vendor/"}` |
 | `socket.io` | `"/socket.io"` | Socket.IO endpoint. Protocol detection + client JS at `{path}/socket.io.js`. `false` to disable. |
