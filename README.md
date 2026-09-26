@@ -26,6 +26,9 @@ need to actually run it in production:
 - **HTTPS that manages itself.** Built-in Let's Encrypt (ACME) issuance and
   renewal, per-domain certificates chosen by SNI, and an SSL panel that shows
   what covers each domain and when it expires.
+- **Two-factor for the admin panel.** Optional TOTP two-factor sign-in
+  (Google Authenticator, Authy, any RFC 6238 app) with one-time recovery
+  codes, off by default and enabled with a single setting.
 - **A built-in admin shell.** A drop-down console on every panel view runs the
   server's own commands, with a searchable history of over 100,000 entries.
 - **Serve only what you list.** An allowlist of entry scripts and static paths
