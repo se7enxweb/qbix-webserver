@@ -163,6 +163,7 @@ check('...and ds, whose Windows build points at a missing source file', isset($f
 check('...and gmssl, which builds but never registers in php.exe there', isset($fw['exclude']['gmssl']), true);
 check('...and xz, which builds but never registers in php.exe there', isset($fw['exclude']['xz']), true);
 check('full on linux-aarch64 leaves out yac, which finds no atomic CAS there', isset($X::resolve('full', 'linux-aarch64', '8.3')['exclude']['yac']), true);
+check('...and so does full on macos-arm64', isset($X::resolve('full', 'macos-arm64', '8.3')['exclude']['yac']), true);
 check('...while linux-x86_64 keeps it', in_array('yac', $X::resolve('full', 'linux-x86_64', '8.3')['include'], true), true);
 check('a dynamic PHP is not held to the static exclusions (rar, on Linux)',
 	isset($X::resolve('full', 'linux-x86_64', '8.3', array(), false)['exclude']['rar']), false);
