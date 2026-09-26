@@ -67,6 +67,14 @@ edited down to what a reader actually needs.
 
 ## Unreleased
 
+Nothing yet.
+
+---
+
+## v0.0.4.28 — domains, certificates and a shell in the control panel, and scripts that run only when listed
+
+2026-09-25
+
 ### Upgrading from v0.0.4.27
 
 - **The control panel's credentials and sessions moved, and are trusted only
@@ -77,7 +85,7 @@ edited down to what a reader actually needs.
   to `/` must belong to root or the server's user and not be writable by group
   or others; otherwise the panel is locked. The common case after an upgrade is
   an application directory left `0775` by a umask of `002`: the refusal, the
-  start-up log and `qbixctl panel:check` now name that directory and the fix
+  start-up log and `qbixctl panel:check` name that directory and the fix
   (`chmod g-w,o-w <dir>`), or set `Q.panel.aclDir` / `Q.panel.sessionsDir` (or
   start with `--conf-dir`) to keep the panel's files elsewhere. See
   `docs/dashboard.md`.
@@ -85,23 +93,119 @@ edited down to what a reader actually needs.
   host name, in quotes, at the end of each line. A log reader anchored at the end
   of the line (fail2ban, a GoAccess custom format) needs updating, or set
   `"Q": {"web": {"log": {"format": "qbix"}}}` to keep the old lines.
-
-### Fixed
-
-- **The shell works from the phar, the deb/rpm packages, the container image and
-  the static binaries.** Its runner and the console tools were never in the phar,
-  so every command answered "the shell runner (qshell.php) is missing" -- as a
-  `429` the console showed as "too many jobs". They are embedded now and started
-  through the phar (`--qshell`, `--qconsole`); `server status`, `server reload`
-  and the other server commands run from the phar too. A missing runner answers
-  `503` with the reason.
-
-### Updated
-
+- **Listed scripts, front controllers and static paths are opt-in.** Nothing
+  changes until `Q.webserver.scripts`, `Q.webserver.frontControllers` or
+  `Q.web.static.paths` is set; see Added below and `docs/configuration.md`.
 - **The `iopoll` event loop is opt-in.** `auto` chooses Revolt when it is
   installed, else `stream_select`, as v0.0.4.27 did; `iopoll` runs only when
   asked for (`QBIX_EVENT_LOOP` or `Q.webserver.eventLoop`), until it has been
   tested against the real `Io\Poll`.
+- **The control panel starts with a default key that must be changed** at the
+  first sign-in, and passwords are now checked against rules and stored with
+  bcrypt. An existing password keeps working. See `docs/passwords.md`.
+
+### Added
+
+- **Only listed scripts run by name, and only listed files are served as they
+  are** (contributed by @fwoldt). `Q.webserver.scripts` names the scripts a
+  request may run under their own name; `Q.webserver.frontControllers` maps
+  path patterns to scripts (`{"^/api/": "index_rest.php"}`); and
+  `Q.web.static.paths` lists the patterns a file must match to be sent as it
+  is. Anything else goes to the front controller, as an application's
+  `.htaccess` would send it, so a bundled tool or a command-line script is not
+  run by being asked for, and protected uploads stay behind the application's
+  download view. The response cache starts a new generation when the lists
+  change, so nothing stored before is answered after.
+- **Domains in the control panel.** The domains in use (listeners, certificate
+  names, Host headers seen, site files), a record per domain with a status
+  (active, suspended with 503, disabled), aliases, subdomains and a document
+  root per domain with host routing on HTTP/1.1 and HTTP/2, redirects (HTTP to
+  HTTPS, preferred `www` or bare host, custom path and host forwarding), HSTS,
+  custom error documents, the certificate covering each domain with issuing or
+  renewing it for one domain, and per-domain traffic linked to the Logs tab.
+- **An SSL tab in the control panel**: the served certificate, every
+  certificate by expiry, safe settings, renew and reload, and a bounded
+  certificate history.
+- **The Q shell**, a drop-down console on every server view (`` ` `` or the
+  toolbar): zsh-style line editing, commands for the server (`server`, `ssl`,
+  `conf`, `site`, `mod`, `cache`, `logs`, `workers`, `ext`), pipes and
+  scripting, tiers with a password step for the commands that change the
+  server, jobs, tabs and splits, window controls, a REST API, and a history of
+  a hundred thousand entries paged to the console and searched on the server.
+  Server commands run as the server, with its configuration; everything else
+  runs as the configured shell user. An application the server recognises can
+  add its own commands. See `docs/shell.md`.
+- **One registry of the PHP applications the server recognises**, used by the
+  panel's Apps and Frameworks tabs and the autohost, so an installation served
+  from its own directory is no longer invisible.
+- **Bookmarkable control panel tabs**, and a Logs tab that filters by text,
+  method, status and host.
+- **A metrics view for browsers at `/Q/metrics`**; scrapers keep the Prometheus
+  text format.
+- **A PHP extension baseline**: one manifest of the extensions the server
+  provides, the `ext:*` commands, a check at start, in `/Q/health` and on the
+  dashboard, and `docs/requirements.md` and `docs/extensions.md`.
+- **Release builds for every platform, PHP version and variant**, computed from
+  the extension baseline, with a source kit and checksums; deb and rpm packages
+  for Debian 12 and 13, Ubuntu 22.04 and 24.04, and EL 9 and 10; and Docker
+  images for every PHP version and variant on amd64 and arm64. See
+  `docs/binaries.md`, `docs/packages.md` and `docs/docker.md`.
+- `qbixctl panel:password` to set the control panel password from the command
+  line, and `qbixctl status`, `stop` and `graceful` finding a running server
+  without its pid file.
+- The previous exceptions of an uncaught error in the log, each with its file
+  and line; with `--debug`, the place, trace and causes in the response too.
+- Documentation pages of lessons, general and hard-won.
+
+### Fixed
+
+- **A second server on the same certificate directory and port took HTTPS
+  away from the first.** Each server now keeps its own copy of its certificate
+  and removes only its own and those of stopped servers; the shared
+  self-signed pair is replaced only when it lacks a name that is asked for,
+  and keeps the names it had. A stopping server no longer removes another
+  server's pid file or stops its watchdog.
+- **An include of a file being rewritten in place could run the head of one
+  version joined to the tail of the next.**
+- **The shell works in every form the server ships in** -- the phar, the
+  packages, the container image and the static binaries -- where it answered
+  that its runner was missing (as a `429`, shown as "too many jobs"). A
+  missing runner answers `503` with the reason.
+- **Shell commands** no longer print nothing when the console's WebSocket is
+  refused, the WebSocket is no longer refused on every TLS page, jobs no
+  longer report exit code 1 when the server's child reaper reaches them first,
+  server commands get the server's configuration, `-f` works anywhere on the
+  line, and commands no longer receive the server's sockets or environment.
+- **The server stopped minutes after the shell was used** with a dashboard
+  open.
+- **The `iopoll` event loop failed to load**; every backend now behaves the
+  same and is tested.
+- The control panel flashed its sign-in form on reload, and a signed-in panel
+  session was not recognised by the dashboard and the other `/Q/` views.
+- The panel answered the application's 404 over HTTP/2, the component cache
+  could not be switched on, and settings the worker pool ignored now apply.
+- The server died at start with a document root directly under `/`, such as a
+  container's `/app`.
+- `ext:build` in the source kit rebuilt the phar from a tree without its
+  designs.
+- The OpenBSD and NetBSD platform jobs, which had failed on every run.
+
+### Updated
+
+- **The server's own pages are compressed on HTTP/1.1** (gzip, or brotli when
+  available), share one stylesheet, and meet contrast and heading-order
+  checks; the dashboard, PHP Info and metrics views use the control panel's
+  header, navigation and colours.
+- **Every control panel settings write goes through the panel store's lock**,
+  and the shell's old files move into the state directory.
+- The compat file wrapper tests paths with string comparisons instead of
+  regular expressions.
+- Panel passwords may repeat digits, symbols and separators; only the whole
+  host name is forbidden.
+- Every command-line script starts with `#!/usr/bin/env` and is executable.
+- A newer push cancels the Docker and platform runs still queued for an older
+  commit on the same branch.
+- The documentation and help text match what the code does.
 
 ---
 
