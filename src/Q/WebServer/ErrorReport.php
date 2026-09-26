@@ -21,6 +21,9 @@ class Q_WebServer_ErrorReport
 	/** Frames of each trace written to the log. */
 	const LOG_FRAMES = 8;
 
+	/** What a response says about an uncaught error when debug is off. */
+	const PUBLIC_MESSAGE = 'The server could not finish this request. The details are in the server log.';
+
 	/** Previous exceptions followed, in the log and in a debug body. */
 	const MAX_CHAIN = 10;
 
@@ -47,7 +50,12 @@ class Q_WebServer_ErrorReport
 	static function body($e, $debug = null)
 	{
 		if ($debug === null) $debug = self::debug();
-		if (!$debug) return (string) $e->getMessage();
+		// Without debug the response says only that something failed. An
+		// exception's message is written for the developer and carries what
+		// they need -- a database user ("Access denied for user 'x'@'host'"),
+		// a path, a query -- none of which belongs in front of a visitor.
+		// The log has it all either way.
+		if (!$debug) return self::PUBLIC_MESSAGE;
 		$out = get_class($e) . ': ' . $e->getMessage()
 			. ' in ' . $e->getFile() . ':' . $e->getLine() . "\n"
 			. $e->getTraceAsString() . "\n";

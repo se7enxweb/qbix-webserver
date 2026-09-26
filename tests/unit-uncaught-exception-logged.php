@@ -29,7 +29,7 @@ foreach (array('persistent' => false, 'fork-per-request' => true) as $mode => $f
 	$port = rh_start($mode, array('Q' => array('webserver' => array('forkPerRequest' => $fork))), 2);
 	$r = rh_get($port, '/index.php?boom=1');
 	check("$mode: the request is answered 500", $r['status'], 500);
-	check("$mode: ...with the message", strpos($r['body'], 'array_unique()') !== false, true);
+	check("$mode: ...without the message, which only the log has", strpos($r['body'], 'array_unique()') !== false, false);
 	$log = '';
 	for ($i = 0; $i < 20 and strpos($log, 'uncaught') === false; ++$i) { usleep(100000); $log = rh_log($mode); }
 	check("$mode: the log names the exception class", strpos($log, 'uncaught TypeError') !== false, true);

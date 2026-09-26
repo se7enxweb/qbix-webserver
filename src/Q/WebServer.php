@@ -2189,9 +2189,12 @@ class Q_WebServer
 			// Never let a request crash the event loop. The response says
 			// what went wrong (where, only with --debug); the log says where.
 			if (class_exists('Q_WebServer_ErrorReport')) Q_WebServer_ErrorReport::log($e, 'server');
-			$msg = htmlspecialchars(class_exists('Q_WebServer_ErrorReport')
-				? Q_WebServer_ErrorReport::body($e) : $e->getMessage());
-			self::sendResponse($client, 500, "Internal Server Error: $msg");
+			if (class_exists('Q_WebServer_ErrorReport') and Q_WebServer_ErrorReport::debug()) {
+				self::sendResponse($client, 500, 'Internal Server Error: ' . Q_WebServer_ErrorReport::body($e, true));
+			} else {
+				// The designed page; the message stays in the log.
+				self::sendResponse($client, 500, self::renderErrorPage(500), 'text/html; charset=utf-8');
+			}
 			self::closeClient($key);
 			$ms = round((microtime(true) - $start) * 1000, 1);
 			Q_WebServer_Dashboard::recordRequest(

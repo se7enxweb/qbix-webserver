@@ -48,7 +48,7 @@ function chained()
 }
 $e = chained();
 $plain = Q_WebServer_ErrorReport::body($e, false);
-check('plain body is the message', $plain, "what surfaced\nline two");
+check('plain body says only that it failed, never the message', $plain, Q_WebServer_ErrorReport::PUBLIC_MESSAGE);
 check('plain body has no path', strpos($plain, __FILE__), false);
 $dbg = Q_WebServer_ErrorReport::body($e, true);
 check('debug body names the class and place', strpos($dbg, 'RuntimeException: what surfaced') === 0
@@ -163,7 +163,7 @@ foreach (array(false, true) as $debug) {
 	check("a good page is 200 $label", array($st, $body), array(200, 'fine'));
 	list($st, $body) = fetch($port, '/chained.php');
 	check("a throwing page is 500 $label", $st, 500);
-	check("its body has the message $label", strpos($body, 'what surfaced') !== false, true);
+	check("its body has the message only with debug $label", strpos($body, 'what surfaced') !== false, $debug);
 	check("its body shows paths only $label", strpos($body, $tmp) !== false, $debug);
 	check("its body shows the cause only $label", strpos($body, 'Caused by LogicException: the cause') !== false, $debug);
 	list($st, $body) = fetch($port, '/boom.php');

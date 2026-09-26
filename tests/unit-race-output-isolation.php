@@ -22,7 +22,9 @@
  *     response (Q_WebServer_State / Q_Response not cleared);
  *   - a global or a static property of a class the script declared keeping
  *     an earlier request's value;
- *   - an exit/die/throw ending the worker (a 502) instead of the request.
+ *   - an exit/die/throw ending the worker (a 502) instead of the request;
+ *   - a throw answering with its message or its partial output, instead of
+ *     the designed error page.
  *
  * Every request carries a unique token; every response is scanned for every
  * token-shaped string, and all of them must be its own. The bodies of the
@@ -76,7 +78,7 @@ $kinds = array(
 	// kind => array(expected status, expected exact body or null to skip)
 	'plain' => array(200, '%A%Z'), 'open' => array(200, '%A%Z'), 'nested' => array(200, '%A%Z'),
 	'callback' => array(200, null), 'endall' => array(200, '%A%Z'), 'exit' => array(200, '%A%Z'),
-	'exitob' => array(200, '%A%Z'), 'die' => array(200, '%A%Z'), 'throw' => array(500, '%A%Z'),
+	'exitob' => array(200, '%A%Z'), 'die' => array(200, '%A%Z'), 'throw' => array(500, null),
 	'handler' => array(200, 'H:%t|%A%Z'), 'warn' => array(200, '%A%Z'),
 	'header' => array(203, '%A%Z'), 'cookie' => array(200, '%A%Z'),
 	'global' => array(200, '%AP:none|%Z'), 'static' => array(200, '%AP:none|%Z'),
@@ -138,6 +140,11 @@ foreach ($res as $i => $r) {
 	}
 	if ($k !== 'cookie' and isset($r['headers']['set-cookie'])) $cookie[] = "$k carries Set-Cookie";
 	if ($k === 'callback' and strpos($r['body'], "A:$t|Z:$t") === false) $cb[] = rh_short($r['body'], 80);
+	// A throw answers with the server's designed error page: nothing the
+	// script printed before throwing (JUNK:), and nothing of the exception's
+	// message (its own token) -- that is for the log, not the visitor.
+	if ($k === 'throw' and (strpos($r['body'], 'JUNK:') !== false or strpos($r['body'], $t) !== false
+		or strpos($r['body'], '<html') === false)) $wrongBody[] = "throw: " . rh_short($r['body'], 80);
 }
 check('no request lost its worker or its connection (exit/die/throw end the request only)', $transport, array());
 check('no response contains another request\'s token (body or headers)', $foreign, array());

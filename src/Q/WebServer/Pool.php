@@ -1302,18 +1302,62 @@ class Q_WebServer_Pool
 		} catch (\Throwable $e) {
 			$status = 500;
 			Q_WebServer_Capture::discard();
-			// The response says what went wrong; where, and how it got there,
-			// only with --debug. The log always gets where it happened, the
-			// first frames, and every previous exception with its own file
-			// and line -- a framework's outer exception is often only
-			// "something went wrong while doing X".
+			// The log always gets where it happened, the first frames, and
+			// every previous exception with its own file and line -- a
+			// framework's outer exception is often only "something went wrong
+			// while doing X".
 			if (class_exists('Q_WebServer_ErrorReport')) {
-				echo Q_WebServer_ErrorReport::body($e);
 				Q_WebServer_ErrorReport::log($e, 'worker ' . getmypid());
 			} else {
-				echo $e->getMessage();
 				fwrite(STDERR, sprintf("  worker %d: uncaught %s at %s:%d\n",
 					getmypid(), get_class($e), $e->getFile(), $e->getLine()));
+			}
+			// PHP hands an uncaught exception to the handler the application
+			// registered with set_exception_handler(), and so does this. The
+			// worker catches it first -- it must, to keep serving -- and used
+			// to answer with the message instead: an application's own error
+			// page never ran, and what the visitor saw was the developer's
+			// text (for a database that refused the password, its user name).
+			$handled = false;
+			$debug = class_exists('Q_WebServer_ErrorReport') && Q_WebServer_ErrorReport::debug();
+			if (!$debug) {
+				$handler = set_exception_handler(null);
+				set_exception_handler($handler);
+				if (is_callable($handler)) {
+					try {
+						call_user_func($handler, $e);
+						$handled = true;
+					} catch (\Q_WebServer_ExitSignal $exit) {
+						$handled = true;   // handlers end with exit; that is their normal end
+					} catch (\Throwable $inner) {
+						Q_WebServer_Capture::discard();
+						Q_WebServer_ErrorReport::log($inner, 'worker ' . getmypid() . ' (exception handler)');
+					}
+				}
+			}
+			if ($handled) {
+				// Whatever status and headers the handler set, as for a script.
+				foreach (headers_list() as $h) {
+					if (strpos($h, ':') !== false) {
+						list($k, $v) = explode(':', $h, 2);
+						$headers[trim($k)] = trim($v);
+					}
+				}
+				if (class_exists('Q_WebServer_State', false)) {
+					foreach (\Q_WebServer_State::getHeaders() as $k => $v) $headers[$k] = $v;
+					$stateCode = \Q_WebServer_State::getStatusCode();
+					if ($stateCode and $stateCode !== 200) $status = $stateCode;
+				}
+				if ($status === 200) $status = 500;
+			} elseif ($debug) {
+				// --debug: what went wrong, where, and how it got there.
+				$headers['Content-Type'] = 'text/plain; charset=utf-8';
+				echo Q_WebServer_ErrorReport::body($e, true);
+			} else {
+				// No handler of its own: the server's designed page, and
+				// nothing of the message.
+				$headers['Content-Type'] = 'text/html; charset=utf-8';
+				echo Q_WebServer::renderErrorPage(500);
 			}
 		}
 		// Back to where the worker started, so the next request is not
