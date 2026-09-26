@@ -25,6 +25,9 @@ ghcr.io/se7enxweb/exponential-velocity:php<version>-<variant>             moves 
 ghcr.io/se7enxweb/exponential-velocity:latest                             newest PHP, standard variant
 ```
 
+> DEPRECATED: `ghcr.io/se7enxweb/qbix-webserver` is no longer updated. Use
+> `ghcr.io/se7enxweb/exponential-velocity` instead.
+
 The images were published as `ghcr.io/se7enxweb/qbix-webserver` until the
 repository was renamed. Those tags stay where they are but get no new ones:
 change the image name to `ghcr.io/se7enxweb/exponential-velocity` and keep the
