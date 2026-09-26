@@ -76,10 +76,22 @@ $keys = array();
 foreach ($variants as $v) {
 	$keys[$v] = $C::cacheKey(request('/a', array('accept-encoding' => $v)));
 }
-// br is offered by all but the first two, so those two share a key and the
-// rest share another; what matters is that there are not five.
-check('encoding spellings collapse to a few entries, not one each',
-	count(array_unique($keys)) <= 2, true);
+// All of them get the same stored body -- gzip, the only coding the cache
+// stores -- so all of them are one entry. Offering br as well used to make a
+// second entry holding identical gzip bytes.
+check('encoding spellings that all get gzip are one entry',
+	count(array_unique($keys)), 1);
+check('br alongside gzip does not make a second entry',
+	$C::cacheKey(request('/a', array('accept-encoding' => 'gzip, deflate, br'))),
+	$C::cacheKey(request('/a', array('accept-encoding' => 'gzip'))));
+// A client offering only br is sent the body as rendered, since gzip is all
+// the cache stores; it shares the plain entry and never gets gzip.
+check('br without gzip shares the plain entry',
+	$C::cacheKey(request('/a', array('accept-encoding' => 'br'))),
+	$C::cacheKey(request('/a', array())));
+check('the key and the stored body agree on the coding',
+	array($C::storedCoding('gzip, deflate, br'), $C::storedCoding('br'), $C::storedCoding('')),
+	array('gzip', '', ''));
 
 check('the same request twice is the same entry',
 	$C::cacheKey(request('/a', array('host' => 'x'))),

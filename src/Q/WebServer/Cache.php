@@ -1269,7 +1269,7 @@ class Q_WebServer_Cache
 			if ($lk === 'content-type') $contentType = strtolower((string) $v);
 		}
 
-		if (strpos(strtolower((string) $accept), 'gzip') === false) return $response;
+		if (self::storedCoding($accept) !== 'gzip') return $response;
 		if (!function_exists('gzencode')) return $response;
 
 		$ok = false;
@@ -1473,15 +1473,29 @@ class Q_WebServer_Cache
 			if ($root !== null) $parts .= '|root=' . $root;
 		}
 
-		// Include Accept-Encoding in key for compressed variants
-		$ae = $parsed['headers']['accept-encoding'] ?? '';
-		if (strpos($ae, 'br') !== false) {
-			$parts .= '|br';
-		} elseif (strpos($ae, 'gzip') !== false) {
-			$parts .= '|gzip';
-		}
+		// Filed under the coding the stored body will actually be in, which
+		// is what encodeBody() decides from the same header. Keyed on what the
+		// client could accept instead, a brotli-capable browser got a |br entry
+		// holding the very gzip bytes of the |gzip entry beside it: every page
+		// rendered, written and held in APCu twice for no difference in output.
+		$coding = self::storedCoding($parsed['headers']['accept-encoding'] ?? '');
+		if ($coding !== '') $parts .= '|' . $coding;
 
 		return md5($parts);
+	}
+
+	/**
+	 * The content-coding a response for this Accept-Encoding is stored in:
+	 * 'gzip', or '' for the body as rendered. The one place that decides it,
+	 * for both the key and encodeBody(), so the two cannot drift apart.
+	 * @method storedCoding
+	 * @static
+	 * @param {string} $acceptEncoding
+	 * @return {string}
+	 */
+	static function storedCoding($acceptEncoding)
+	{
+		return strpos(strtolower((string) $acceptEncoding), 'gzip') !== false ? 'gzip' : '';
 	}
 
 	static function cacheKeyFromUrl($url)

@@ -54,9 +54,10 @@ A cached page is served only to a request that could have produced it: a `GET`
 with no `Authorization` header and no skip cookie. A skip cookie matches any cookie
 whose name begins with it, so `PHPSESSID` also covers a name with a suffix added.
 
-The key is the host, the path, the query string and the encoding the client
-accepts (`br`, `gzip` or none). Two query strings that differ only in order are two
-pages.
+The key is the host, the path, the query string and the coding the stored body is
+in: gzip for a client that accepts it, otherwise the body as rendered. A browser
+that also offers `br` shares the gzip entry, since gzip is what the cache stores.
+Two query strings that differ only in order are two pages.
 
 A client's own `Cache-Control: no-cache` does not bypass the cache, so a visitor
 pressing reload cannot make the server render every page again. A cache warmer
