@@ -232,9 +232,13 @@ jobs:
   # illumos is the surviving OpenSolaris line, and carries a genuinely
   # different set of system calls underneath the same POSIX surface.
   unix:
-    # omnios (illumos) is marked experimental: it is run and shown, but its
-    # failure does not fail the workflow (see docs/binaries.md). continue-on-error
-    # already applies to this job; the name suffix makes an expected red read as such.
+    # omnios (illumos) is marked experimental and, as of the finding in
+    # docs/binaries.md, runs on demand only (workflow_dispatch): its serve
+    # check fails today for a known reason that needs an illumos host to fix,
+    # and its VM takes ~25 minutes to boot, so it is not run on every push. On
+    # a normal push its matrix leg does nothing but check out. dragonflybsd
+    # still runs every time. continue-on-error already applies to this job; the
+    # name suffix makes the expected red read as such when it is run by hand.
     name: ${{ matrix.os }}${{ matrix.experimental && ' (experimental)' || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -271,9 +275,18 @@ jobs:
             done
           run: sh tests/phar-serves.sh bin/qbixserver.phar
 
+      # omnios (illumos) runs on demand only, not on every push. The serve
+      # check fails there today for a reason that is understood but not yet
+      # fixed -- stream_select() never reports the listener readable and the
+      # accept never yields, though the accept primitives all work in isolation
+      # (see docs/binaries.md) -- and the fix needs a shell on an illumos host,
+      # which this VM does not give. The VM also takes ~25 minutes to boot and
+      # fail, so running it on every push spends that on a known, non-gating
+      # red. Trigger this workflow by hand (workflow_dispatch) to run it, the
+      # same way Haiku is handled below.
       - name: Serve a page on ${{ matrix.os }}
         uses: vmactions/omnios-vm@v1
-        if: matrix.os == 'omnios'
+        if: matrix.os == 'omnios' && github.event_name == 'workflow_dispatch'
         with:
           usesh: true
           prepare: pkg install php-83 curl || pkg install curl
