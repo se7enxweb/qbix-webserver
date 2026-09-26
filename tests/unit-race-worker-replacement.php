@@ -136,7 +136,7 @@ function assertPoolHealthy($name, $workers)
 	$zombies = 0;
 	$until = microtime(true) + 3.0;
 	do {
-		$zombies = count(array_filter(rh_children($serverPid), function ($s) { return $s === 'Z'; }));
+		$zombies = count(array_filter(rh_workers($serverPid), function ($s) { return $s === 'Z'; }));
 		if ($zombies === 0) break;
 		usleep(100000);
 	} while (microtime(true) < $until);
@@ -171,7 +171,7 @@ $sport = rh_start('inherit', array(), 2);
 file_put_contents($root . DS . 'slow.php', '<?php usleep(1500000); echo "SLOW-DONE";');
 file_put_contents($root . DS . 'bye.php', '<?php Q_WebServer_Pool::retireAfterResponse("inherit test"); echo "BYE";');
 $inheritPid = rh_server_pid('inherit');
-$before = array_keys(rh_children($inheritPid));
+$before = array_keys(rh_workers($inheritPid));
 $heldByNew = -1;
 $res = rh_many($sport, array(
 	array('path' => '/slow.php?x=1'),
@@ -180,7 +180,7 @@ $res = rh_many($sport, array(
 	// Once the replacement exists and the slow request is still in flight,
 	// count the client connections the new worker holds.
 	if ($heldByNew >= 0) return;
-	$new = array_diff(array_keys(rh_children($inheritPid)), $before);
+	$new = array_diff(array_keys(rh_workers($inheritPid)), $before);
 	foreach ($new as $pid) { usleep(100000); $heldByNew = rh_tcp_held($pid, $sport); }
 }, 2.0);
 check('inherit: the slow request is answered', $res[0]['status'] . ' ' . $res[0]['body'], '200 SLOW-DONE');

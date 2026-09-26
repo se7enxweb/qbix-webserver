@@ -244,12 +244,43 @@ function rh_children($pid)
 	return $out;
 }
 
-/** Live (non-zombie) children count, polled until it equals $want or $timeout. */
+/** Whether $pid is the pool's zygote (it names itself "qbixserver: zygote"). */
+function rh_is_zygote($pid)
+{
+	return strpos((string) @file_get_contents("/proc/$pid/cmdline"), 'qbixserver: zygote') !== false;
+}
+
+/**
+ * The server's workers, as pid => state letter: its children other than the
+ * zygote, plus the zygote's children -- where the pool forks workers once it
+ * has one (Q.webserver.zygote).
+ */
+function rh_workers($pid)
+{
+	$out = array();
+	foreach (rh_children($pid) as $c => $s) {
+		if (rh_is_zygote($c)) {
+			$out += rh_children($c);
+		} else {
+			$out[$c] = $s;
+		}
+	}
+	return $out;
+}
+
+/** The zygote's pid, or 0 when the server has none. */
+function rh_zygote($pid)
+{
+	foreach (array_keys(rh_children($pid)) as $c) if (rh_is_zygote($c)) return $c;
+	return 0;
+}
+
+/** Live (non-zombie) worker count, polled until it equals $want or $timeout. */
 function rh_wait_children($pid, $want, $timeout = 5.0)
 {
 	$until = microtime(true) + $timeout;
 	do {
-		$live = count(array_filter(rh_children($pid), function ($s) { return $s !== 'Z'; }));
+		$live = count(array_filter(rh_workers($pid), function ($s) { return $s !== 'Z'; }));
 		if ($live === $want) return $live;
 		usleep(50000);
 	} while (microtime(true) < $until);

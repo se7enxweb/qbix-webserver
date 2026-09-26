@@ -82,7 +82,7 @@ usleep(300000);
 check("the pool recovers to $workers live workers", rh_wait_children($serverPid, $workers, 5.0), $workers);
 $z = 0;
 for ($i = 0; $i < 30; ++$i) {
-	$z = count(array_filter(rh_children($serverPid), function ($s) { return $s === 'Z'; }));
+	$z = count(array_filter(rh_workers($serverPid), function ($s) { return $s === 'Z'; }));
 	if (!$z) break;
 	usleep(100000);
 }
