@@ -103,6 +103,16 @@ Nothing yet.
 - **The control panel starts with a default key that must be changed** at the
   first sign-in, and passwords are now checked against rules and stored with
   bcrypt. An existing password keeps working. See `docs/passwords.md`.
+- **The operating-system package was renamed to `exponential-velocity`** (deb
+  and rpm), with the service unit `exponential-velocity.service` and the
+  `/usr/share/exponential-velocity`, `/var/lib/exponential-velocity` and
+  `/etc/default/exponential-velocity` paths. Installing it over an installed
+  `qbix-webserver` package upgrades in place: it declares Replaces/Obsoletes,
+  carries the settings and state across, re-enables and restarts the service if
+  it was running, and leaves `/usr/share/qbix-webserver` as a symlink so old
+  references keep working. See `docs/packages.md`.
+- **The project's default branch is now `main`** (was `maintain`), and the
+  package it publishes is `se7enxweb/exponential-velocity`.
 
 ### Added
 
