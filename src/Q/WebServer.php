@@ -1994,8 +1994,11 @@ class Q_WebServer
 			$savedRoot = self::$rootDir;
 			$keepOpen = self::handleRequest($client, $parsed);
 		} catch (\Throwable $e) {
-			// Never let a request crash the event loop
-			$msg = htmlspecialchars($e->getMessage());
+			// Never let a request crash the event loop. The response says
+			// what went wrong (where, only with --debug); the log says where.
+			if (class_exists('Q_WebServer_ErrorReport')) Q_WebServer_ErrorReport::log($e, 'server');
+			$msg = htmlspecialchars(class_exists('Q_WebServer_ErrorReport')
+				? Q_WebServer_ErrorReport::body($e) : $e->getMessage());
 			self::sendResponse($client, 500, "Internal Server Error: $msg");
 			self::closeClient($key);
 			$ms = round((microtime(true) - $start) * 1000, 1);
@@ -3373,8 +3376,12 @@ class Q_WebServer
 		} catch (\Throwable $e) {
 			$status = 500;
 			ob_clean();
-			echo json_encode(array('error' => $e->getMessage()));
+			// The message, or with --debug where and how (see ErrorReport);
+			// the log gets the details either way.
+			echo json_encode(array('error' => class_exists('Q_WebServer_ErrorReport')
+				? Q_WebServer_ErrorReport::body($e) : $e->getMessage()));
 			$headers['Content-Type'] = 'application/json';
+			if (class_exists('Q_WebServer_ErrorReport')) Q_WebServer_ErrorReport::log($e, 'in-process');
 		}
 
 		$body = ob_get_clean();
@@ -3672,7 +3679,13 @@ try {
         $status = Q_WebServer::responseCode();
     }
     if ($code) $status = $code;
-} catch (Throwable $e) { $status = 500; ob_clean(); echo $e->getMessage(); $headers['Content-Type']='text/plain'; }
+} catch (Throwable $e) {
+    $status = 500; ob_clean(); $headers['Content-Type']='text/plain';
+    fwrite(STDERR, 'uncaught ' . get_class($e) . ' at ' . $e->getFile() . ':' . $e->getLine() . "\n");
+    if (empty($req['debug'])) echo $e->getMessage();
+    else for ($x = $e, $n = 0; $x && $n <= 10; $x = $x->getPrevious(), $n++)
+        echo ($n ? "\nCaused by " : ''), get_class($x), ': ', $x->getMessage(), ' in ', $x->getFile(), ':', $x->getLine(), "\n", $x->getTraceAsString(), "\n";
+}
 $body = ob_get_clean();
 echo json_encode(compact('status','body','headers'), JSON_UNESCAPED_SLASHES);
 WORKER;
@@ -3708,6 +3721,8 @@ WORKER;
 			// Where this class lives, so the worker can load it. Inside a phar
 			// this is a phar:// path, which require_once handles.
 			'serverDir'   => __DIR__,
+			// Whether an uncaught error shows where it happened (--debug).
+			'debug'       => class_exists('Q_WebServer_ErrorReport') && Q_WebServer_ErrorReport::debug(),
 		), JSON_UNESCAPED_SLASHES);
 
 		// Launch subprocess

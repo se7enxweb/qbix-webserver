@@ -965,19 +965,19 @@ class Q_WebServer_Pool
 		} catch (\Throwable $e) {
 			$status = 500;
 			Q_WebServer_Capture::discard();
-			echo $e->getMessage();
-			// Where it came from, for whoever reads the log. The response
-			// carried only the message, so a 500 said "array_unique(): ...
-			// string given" and nothing about which of thousands of files.
-			$trace = array();
-			foreach (array_slice($e->getTrace(), 0, 8) as $f) {
-				$trace[] = ($f['file'] ?? '?') . ':' . ($f['line'] ?? '?') . ' '
-					. (isset($f['class']) ? $f['class'] . ($f['type'] ?? '::') : '') . ($f['function'] ?? '');
+			// The response says what went wrong; where, and how it got there,
+			// only with --debug. The log always gets where it happened, the
+			// first frames, and every previous exception with its own file
+			// and line -- a framework's outer exception is often only
+			// "something went wrong while doing X".
+			if (class_exists('Q_WebServer_ErrorReport')) {
+				echo Q_WebServer_ErrorReport::body($e);
+				Q_WebServer_ErrorReport::log($e, 'worker ' . getmypid());
+			} else {
+				echo $e->getMessage();
+				fwrite(STDERR, sprintf("  worker %d: uncaught %s at %s:%d\n",
+					getmypid(), get_class($e), $e->getFile(), $e->getLine()));
 			}
-			fwrite(STDERR, sprintf("  worker %d: uncaught %s at %s:%d: %s\n    %s\n",
-				getmypid(), get_class($e), $e->getFile(), $e->getLine(),
-				str_replace(array("\r", "\n"), ' ', $e->getMessage()),
-				implode("\n    ", $trace)));
 		}
 		// Back to where the worker started, so the next request is not
 		// affected by where this one went.

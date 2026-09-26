@@ -41,6 +41,7 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `webserver.workerMemoryCeiling` | 256, or ¾ of `memory_limit` if lower | Heap size in MB past which a persistent worker answers its current request and is then replaced, with the reason logged. `0` disables. See [reset.md](reset.md#a-worker-that-grows-is-replaced) |
 | `webserver.warmup` | (none) | Script run once in the parent, after the source transform and before forking, to warm the application copy-on-write. See [reset.md](reset.md) |
 | `webserver.eventLoop` | `"auto"` | Event loop backend: `auto`, `iopoll` (native `Io\Poll`), `revolt` or `select` (`stream_select`). The `QBIX_EVENT_LOOP` environment variable overrides it. See [architecture.md](architecture.md#event-loop-backends) |
+| `webserver.debug` | false | What an uncaught error in a request shows in its 500 response: the message only, or with `true` (or `--debug`) also its class, file and line, the trace and every previous exception. The error log always gets the file and line of each exception in the chain. Off by default, because it puts server paths in a response |
 | `dashboard` | (enabled) | Set to `false` to disable `/Q/dashboard`, `/Q/health`, and `/Q/ws` entirely |
 | `dashboard.token` | (none) | When set, dashboard requires `?token=VALUE` in the URL |
 | `autoload.psr-4` | `{}` | PSR-4 namespace mappings: `{"App\\": "src/"}` |

@@ -39,7 +39,7 @@ php qbixserver.php --help
 | `--stop`, `--reload` | Stop the running server, or re-exec it, through its pid file. |
 | `-t` | Test the configuration and exit. |
 | `--hotreload` | Watch files and restart when they change. |
-| `-q`/`--quiet`, `--verbose`, `--debug` | Errors only; also every certificate provider tried; every event. |
+| `-q`/`--quiet`, `--verbose`, `--debug` | Errors only; also every certificate provider tried; every event. `--debug` also puts the file, line, trace and previous exceptions of an uncaught error into its 500 response (`webserver.debug`). |
 | `--open[=/path]` | Open a browser once the server is ready. |
 | `--version`, `-v` | Print the version. |
 

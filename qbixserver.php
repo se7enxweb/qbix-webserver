@@ -1084,6 +1084,12 @@ $opts['https-port'] = $httpsPort;
 
 // Store HTTP port in config too (for anything that reads it)
 Q_Config::set('Q', 'webserver', 'port', $httpPort);
+// --debug decides how much an uncaught error in a request shows in the
+// response: the message only, or its file and line, trace and previous
+// exceptions too (Q_WebServer_ErrorReport). Q.webserver.debug in the
+// configuration does the same; the log always gets the details.
+if (!empty($opts['debug'])) Q_Config::set('Q', 'webserver', 'debug', true);
+require_once __DIR__ . '/src/Q/WebServer/ErrorReport.php';
 // How this server was started, for commands it runs on its own behalf (the
 // shell's console commands act on this server, not on a default one).
 Q_Config::set('Q', 'webserver', 'startOptions', array(
