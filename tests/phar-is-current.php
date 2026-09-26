@@ -41,6 +41,13 @@ foreach (array('build/extensions.json', 'build/extensions.schema.json') as $f) {
 }
 $add($base . '/web');
 $add($base . '/designs');
+// docs/*.md and README.md are bundled so the built-in /Q/docs viewer works from
+// the phar; the internal outreach.md is never shipped.
+foreach (glob($base . '/docs/*.md') as $doc) {
+	if (basename($doc) === 'outreach.md') continue;
+	$expected['docs/' . basename($doc)] = sha1_file($doc);
+}
+if (is_file($base . '/README.md')) $expected['README.md'] = sha1_file($base . '/README.md');
 
 try {
 	$phar = new Phar($pharFile);
