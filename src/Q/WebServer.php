@@ -1618,13 +1618,17 @@ class Q_WebServer
 					$ms = round((microtime(true) - $startTime) * 1000, 1);
 					$method = is_array($info) ? ($info['method'] ?? 'GET') : 'GET';
 					$uri = is_array($info) ? ($info['uri'] ?? '/') : '/';
+					// IP and UA only -- never cookies; these feed the admin-gated
+					// error metrics, never a response served to a visitor.
+					$ip = is_array($info) ? ($info['clientIp'] ?? '') : '';
+					$ua = is_array($info) ? ($info['userAgent'] ?? '') : '';
 
 					// Check if child exited abnormally
 					if (!pcntl_wifexited($st) || pcntl_wexitstatus($st) !== 0) {
 						// Worker crashed or was killed — record as 502
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 502, $ms, 0, true);
 							if (class_exists('Q_WebServer_Metrics', false)) {
-								Q_WebServer_Metrics::recordRequest(502, $ms, $method, $uri, '', '', 0);
+								Q_WebServer_Metrics::recordRequest(502, $ms, $method, $uri, $ip, $ua, 0);
 							}
 					} else {
 						// Normal exit — child already sent the response and recorded nothing
@@ -1670,11 +1674,15 @@ class Q_WebServer
 						$ms = round(($now - $startTime) * 1000, 1);
 						$method = is_array($info) ? ($info['method'] ?? 'GET') : 'GET';
 						$uri = is_array($info) ? ($info['uri'] ?? '/') : '/';
+						// IP and UA only -- never cookies; these feed the
+						// admin-gated error metrics, never a visitor response.
+						$ip = is_array($info) ? ($info['clientIp'] ?? '') : '';
+						$ua = is_array($info) ? ($info['userAgent'] ?? '') : '';
 						@posix_kill($pid, SIGKILL);
 						unset(Q_WebServer::$workerPids[$pid]);
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 504, $ms, 0, true);
 						if (class_exists('Q_WebServer_Metrics', false)) {
-							Q_WebServer_Metrics::recordRequest(504, $ms, $method, $uri, '', '', 0);
+							Q_WebServer_Metrics::recordRequest(504, $ms, $method, $uri, $ip, $ua, 0);
 						}
 					}
 				}
@@ -3555,6 +3563,12 @@ class Q_WebServer
 					'time' => microtime(true),
 					'method' => $parsed['method'],
 					'uri' => $parsed['uri'],
+					// Client IP and user agent so a worker that crashes (502) or
+					// is killed for running too long (504) is recorded with the
+					// request it was serving. Deliberately not the cookies: a
+					// session id must never enter the error telemetry.
+					'clientIp' => $parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
+					'userAgent' => $parsed['headers']['user-agent'] ?? '',
 				);
 				Q_WebServer_Fork::waitpid($pid, $st, 1);
 				self::$lastStatus = -1; // -1 = delegated to child, don't record in parent
