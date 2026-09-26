@@ -489,6 +489,9 @@ class Q_WebServer_Pool
 			// them, so an entry for a file changed since is not used.
 			if (class_exists('Q_WebServer_CompatFileWrapper', false)) {
 				Q_WebServer_CompatFileWrapper::forgetStats();
+				// A worker has request boundaries, so it may also remember
+				// which paths exist; see existsAndIsDir().
+				Q_WebServer_CompatFileWrapper::rememberExistence(true);
 			}
 
 			self::childRun($pair[1], $this->octane, $this->maxRequests);

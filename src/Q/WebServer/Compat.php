@@ -77,6 +77,17 @@ class Q_WebServer_Compat
 		// The answers above are remembered for the rest of the request, so
 		// "forget what you know about files" has to reach that memory too.
 		'clearstatcache'       => 'Q_WebServer_Compat::_clearstatcache',
+		// And so does running another program: it can create, change or
+		// remove files the wrapper never sees. Exponential makes image
+		// variations with ImageMagick through system(), then checks the
+		// file it expects; a remembered "not there" from before would say
+		// the new file is missing.
+		'exec'                 => 'Q_WebServer_Compat::_exec',
+		'system'               => 'Q_WebServer_Compat::_system',
+		'passthru'             => 'Q_WebServer_Compat::_passthru',
+		'shell_exec'           => 'Q_WebServer_Compat::_shell_exec',
+		'proc_close'           => 'Q_WebServer_Compat::_proc_close',
+		'pclose'               => 'Q_WebServer_Compat::_pclose',
 	);
 
 	/**
@@ -99,6 +110,78 @@ class Q_WebServer_Compat
 			Q_WebServer_CompatFileWrapper::dropStats();
 		}
 		\clearstatcache((bool) $clearRealpathCache, (string) $filename);
+	}
+
+	/**
+	 * After another program ran: forget what is remembered about files,
+	 * here and in PHP's own stat cache. See the replacements for why.
+	 */
+	private static function forgetFilesAfterProcess()
+	{
+		if (class_exists('Q_WebServer_CompatFileWrapper', false)) {
+			Q_WebServer_CompatFileWrapper::dropStats();
+		}
+		\clearstatcache();
+	}
+
+	/** exec(), then forget remembered file facts. */
+	static function _exec($command, &$output = null, &$result_code = null)
+	{
+		try {
+			return \exec($command, $output, $result_code);
+		} finally {
+			self::forgetFilesAfterProcess();
+		}
+	}
+
+	/** system(), then forget remembered file facts. */
+	static function _system($command, &$result_code = null)
+	{
+		try {
+			return \system($command, $result_code);
+		} finally {
+			self::forgetFilesAfterProcess();
+		}
+	}
+
+	/** passthru(), then forget remembered file facts. */
+	static function _passthru($command, &$result_code = null)
+	{
+		try {
+			return \passthru($command, $result_code);
+		} finally {
+			self::forgetFilesAfterProcess();
+		}
+	}
+
+	/** shell_exec(), then forget remembered file facts. */
+	static function _shell_exec($command)
+	{
+		try {
+			return \shell_exec($command);
+		} finally {
+			self::forgetFilesAfterProcess();
+		}
+	}
+
+	/** proc_close(): the program has finished; forget remembered file facts. */
+	static function _proc_close($process)
+	{
+		try {
+			return \proc_close($process);
+		} finally {
+			self::forgetFilesAfterProcess();
+		}
+	}
+
+	/** pclose(): the program has finished; forget remembered file facts. */
+	static function _pclose($handle)
+	{
+		try {
+			return \pclose($handle);
+		} finally {
+			self::forgetFilesAfterProcess();
+		}
 	}
 
 	/** @var bool Whether the phar:// scheme is currently wrapped for transforms. */
@@ -2936,6 +3019,7 @@ class Q_WebServer_CompatFileWrapper
 	{
 		self::$statMemo = array();
 		self::$includeMemo = array();
+		self::$existMemo = array();
 	}
 
 	/** @var bool|null whether the opcode cache serves includes without checking the file */
@@ -3359,6 +3443,53 @@ class Q_WebServer_CompatFileWrapper
 	static function existsAndIsDir($path)
 	{
 		if ($path === '' or strpos($path, "\0") !== false) return null;
+		// Remembered like the stats: Exponential asks about the same paths
+		// again and again while it renders a page (2600 questions about 700
+		// paths on the front page), and every answer used to cost a glob()
+		// and a realpath(). Forgotten with the stats -- a change made through
+		// the wrapper, clearstatcache(), another program having run, the end
+		// of the request -- so it is never older than they are.
+		//
+		// Only in a pool worker, which has those request boundaries. The
+		// server process has none: it keeps the wrapper for its whole life,
+		// so a remembered "not there" would never be forgotten -- the
+		// response cache's generation marker, created after the first look,
+		// was never seen.
+		if (!self::$rememberExistence) {
+			return self::askExistsAndIsDir($path);
+		}
+		if (isset(self::$existMemo[$path]) or array_key_exists($path, self::$existMemo)) {
+			return self::$existMemo[$path];
+		}
+		if (count(self::$existMemo) >= self::STAT_MEMO_MAX) {
+			self::$existMemo = array();
+		}
+		return self::$existMemo[$path] = self::askExistsAndIsDir($path);
+	}
+
+	/** @var array path => existsAndIsDir() answer, for as long as the stats */
+	private static $existMemo = array();
+
+	/** @var bool whether existsAndIsDir() answers are remembered in this process */
+	private static $rememberExistence = false;
+
+	/**
+	 * Remember existsAndIsDir() answers from now on, in a process that has
+	 * request boundaries (forgetStats()) -- a pool worker. Called from the
+	 * worker's side of the fork.
+	 * @method rememberExistence
+	 * @static
+	 * @param {boolean} $on
+	 */
+	static function rememberExistence($on = true)
+	{
+		self::$rememberExistence = (bool) $on;
+		self::$existMemo = array();
+	}
+
+	/** existsAndIsDir() without the memory: asks the operating system. */
+	private static function askExistsAndIsDir($path)
+	{
 		$pattern = addcslashes($path, self::globSpecials());
 		$found = @glob($pattern, GLOB_MARK | GLOB_NOSORT);
 		if (!$found) return null;
