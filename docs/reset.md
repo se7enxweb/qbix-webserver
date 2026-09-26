@@ -6,7 +6,7 @@ Qbix Server's persistent-worker mode ("octane mode") keeps workers alive across 
 
 | State | How | Cost |
 |---|---|---|
-| **Static class properties** | Snapshot at startup, restore via cached `ReflectionProperty` handles | ~0.03ms (cached handles, no per-request Reflection lookups) |
+| **Static class properties** | Snapshot at startup, restore via cached `ReflectionProperty` handles | 0.28 ms for 424 classes, 0.91 ms for 586 (cached handles, no per-request Reflection lookups; [measured](workers.md#what-a-worker-costs)) |
 | **$_GET, $_POST, $_COOKIE, $_FILES** | Re-populated from the request | 0 (overwritten) |
 | **$_SERVER** | Re-populated from the request | 0 (overwritten) |
 | **$_REQUEST** | Rebuilt from $_GET + $_POST | 0 |
@@ -66,7 +66,7 @@ Previously risky items **now handled automatically** by the compat layer:
 | Static properties | **Persist** — leak between requests | **Reset** via snapshot restore |
 | Globals | **Persist** — leak between requests | **Reset** via snapshot restore |
 | Superglobals | Reset by the SAPI | Reset by the server |
-| Memory per worker | ~50 MB (independent bootstrap) | ~5 MB warmed, up to full working set unwarmed (see *Warming the pool* below) |
+| Memory per worker | ~50 MB (independent bootstrap) | private pages only: 1.3–1.9 MB for the server alone, ~10 MB for a full CMS warmed, up to its full working set unwarmed (see *Warming the pool* below and [what a worker costs](workers.md#what-a-worker-costs)) |
 | DB connections | Persist (risk) | Persist (same risk, same mitigation) |
 | OPcache | Shared across workers | Shared via parent process |
 | `max_requests` recycling | Worker dies and respawns periodically | Kept as a safety net: `maxRequests` (default 1000), plus replacement on the memory ceiling or unbalanced output buffers, and on request |

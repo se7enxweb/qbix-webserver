@@ -9,6 +9,7 @@ sized, how requests reach a worker, and when a worker is replaced.
 exactly what is reset.
 
 - [How many workers](#how-many-workers)
+- [What a worker costs](#what-a-worker-costs)
 - [Static and dynamic pools](#static-and-dynamic-pools)
 - [Forking from a zygote](#forking-from-a-zygote)
 - [How a request reaches a worker](#how-a-request-reaches-a-worker)
@@ -38,6 +39,53 @@ Anything beyond the automatic ceiling is a deliberate choice, made with
 ```sh
 php qbixserver.php --root=web --workers=32
 ```
+
+---
+
+### What a worker costs
+
+Measured 2026-09-26 on a 12-core Linux host with PHP 8.5, from
+`/proc/<pid>/smaps_rollup` -- proportional (PSS) and private memory, never RSS,
+which counts every page shared after the fork once per worker and so overstates a
+pool many times over.
+
+| | Private memory per worker | PSS per worker | Workers per GB (PSS) |
+|---|---|---|---|
+| The server alone, serving a one-line PHP page | **1.3–1.9 MB** | 1.4–1.9 MB | about 530 |
+| A full CMS (Exponential, ~600 classes), serving real pages | **~10 MB** | ~11 MB | about 90 |
+
+What is shared is the code and data the parent loaded before forking -- about 20
+MB for the server alone, 47 MB for the CMS -- and that is paid once. What a worker
+costs is its private pages: the ones it writes after the fork (the allocator's
+arenas, each request's objects, the application's own caches). That is why a
+bigger application costs more per worker even though its code is shared, and why a
+worker that has served requests costs more than one that is freshly forked.
+
+Measured totals: 1,000 idle-to-light workers of the bare server came to 1,881 MB
+PSS; 49 CMS workers to 617 MB.
+
+**The pool has a ceiling below about 1,000 workers** with the default event loop
+(`stream_select`), which cannot watch file descriptors past 1,024. Each worker
+holds one, and so does every client connection: 900 workers served 20,000
+requests without a failure, 1,000 reset every connection. Going further needs an
+event loop without that limit (see [architecture.md](architecture.md#event-loop-backends)).
+
+**The reset between requests** -- statics, globals, the shimmed functions' state,
+a cycle collection -- measured 0.55 ms median for the one-line page (0.28 ms of it
+restoring statics across 424 classes) and 4.6 ms median for the CMS (0.91 ms of
+it for 586 classes). For the CMS that is about 1.5% of a 300 ms page render.
+
+To measure your own:
+
+```sh
+# every descendant of the listener: PSS, private and shared
+for p in $(pgrep -P $(pgrep -f qbixserver | head -1)); do
+  awk '/^Pss:/{p=$2} /^Private_(Clean|Dirty):/{u+=$2} END{print p, u}' /proc/$p/smaps_rollup
+done
+```
+
+The dashboard's Worker Memory card and `/Q/health` `workerStats` report the same
+proportional figure.
 
 ---
 

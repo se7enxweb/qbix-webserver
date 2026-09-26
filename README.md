@@ -63,20 +63,20 @@ They try to solve this by making PHP evented, like Node.js. Swoole's coroutines 
 
 ### How Qbix solves it
 
-Instead of making each worker do more, Qbix runs more workers. The server loads your entire framework into a parent process, then calls `pcntl_fork()`. The kernel marks every page copy-on-write. Each worker shares the parent's loaded classes and only pays for pages it actually writes to during the request. A WordPress-like request dirties 30 pages = 120KB. So the same 4GB that gives fpm 80 workers gives Qbix thousands.
+Instead of making each worker do more, Qbix runs more workers. The server loads your entire framework into a parent process, then calls `pcntl_fork()`. The kernel marks every page copy-on-write. Each worker shares the parent's loaded classes and pays only for the pages it writes to after the fork. Measured as private memory (not RSS, which counts shared pages once per worker): about 1.3–1.9 MB per worker with nothing loaded, about 10 MB for a full CMS. So the same 4GB that gives fpm 80 workers gives Qbix a few hundred CMS workers, or around two thousand small ones -- within the event loop's ceiling of about 1,000 workers per pool ([what a worker costs](docs/workers.md#what-a-worker-costs)).
 
 Your code runs unmodified, in two modes:
 
-**Persistent workers (default)** — workers stay alive across requests. Between each request, a Reflection-based snapshot restores all static properties in 0.03ms. 44 PHP functions (`header()`, `session_start()`, `ini_set()`, `set_error_handler()`, etc.) are shimmed via source transformation so they reset correctly. This is how you get 2,294 req/s on CPU-bound work and 1,060 req/s under I/O.
+**Persistent workers (default)** — workers stay alive across requests. Between each request, a Reflection-based snapshot restores all static properties, and globals and the shimmed functions' state are reset: about 0.5 ms for a small application, 4–5 ms for a CMS with ~600 classes -- around 1.5% of a typical page render. 44 PHP functions (`header()`, `session_start()`, `ini_set()`, `set_error_handler()`, etc.) are shimmed via source transformation so they reset correctly. This is how you get 2,294 req/s on CPU-bound work and 1,060 req/s under I/O.
 
-**Fork-per-request** — if persistent mode doesn't work for your code (functions with internal static variables, plugins that register global state in ways the shim can't track), set `forkPerRequest: true`. Each request gets a fresh fork. It's slower than persistent mode, but each forked worker still costs only 120KB instead of 50MB, so you can run 100× more of them than fpm on the same hardware. That's the whole point — blocking I/O doesn't matter when you have enough workers, and COW makes "enough workers" nearly free.
+**Fork-per-request** — if persistent mode doesn't work for your code (functions with internal static variables, plugins that register global state in ways the shim can't track), set `forkPerRequest: true`. Each request gets a fresh fork. It's slower than persistent mode, but each forked worker still costs a few MB instead of 50MB, so you can run many times more of them than fpm on the same hardware. That's the whole point — blocking I/O doesn't matter when you have enough workers, and COW makes "enough workers" nearly free.
 
 ### What it replaces
 
 | | nginx + php-fpm | Qbix Server |
 |---|---|---|
-| 💾 **Memory per worker** | 30–60MB (duplicated) | ~200KB (COW, measured) |
-| 👥 **Concurrent PHP** (1GB) | ~24 workers | **~5,000** (typical) |
+| 💾 **Memory per worker** | 30–60MB (duplicated) | **1.3–1.9 MB** bare, **~10 MB** full CMS (COW, private, measured) |
+| 👥 **Concurrent PHP** (1GB) | ~24 workers | **~530** bare, **~90** full CMS (under ~1,000 per pool with `stream_select`) |
 | 🔒 **Isolation** | Statics leak between requests | Snapshot reset — no leaks |
 | 🚀 **Throughput** (CPU-bound) | ~400 req/s (Swoole 4w) | **2,294 req/s** (100w) |
 | 🚀 **Throughput** (I/O, same RAM) | 78 req/s (fpm/Swoole 4w) | **1,060 req/s** (100w) |
@@ -130,7 +130,7 @@ You can also package your entire app — code, assets, SQLite database — into 
 | 🎨 | [Designs](docs/designs.md) | Restyle the dashboard, panel, docs, listing and error pages from `designs/` |
 | 🚀 | [Deploy & Federation](docs/deploy.md) | Rsync deploy, cluster replication, inter-server trust |
 | 🔍 | [API Discovery](docs/api-discovery.md) | OpenAPI, MCP, qbix.json, HTTP/2 |
-| 🧩 | [Compatibility](docs/compatibility.md) | SAPI emulation, 28 shimmed functions, class ownership, tests |
+| 🧩 | [Compatibility](docs/compatibility.md) | SAPI emulation, 44 shimmed functions, class ownership, tests |
 | 📈 | [Benchmarks](docs/BENCHMARKS.md) | Full methodology and numbers |
 | 🔄 | [State Reset](docs/reset.md) | What gets restored between requests |
 | 🔀 | [Migrate from nginx](docs/migrate-nginx.md) | Server blocks, try_files, proxy_pass, gzip |
@@ -403,15 +403,15 @@ table the same day — and it would be the most interesting entry in it.
 
 | Platform | Workers | Copy-on-write | Mode |
 |---|---|---|---|
-| **Linux** x86_64, aarch64 | `pcntl_fork` | yes — 120KB per worker | persistent or fork-per-request |
+| **Linux** x86_64, aarch64 | `pcntl_fork` | yes — a few MB per worker | persistent or fork-per-request |
 | **macOS** Intel, Apple Silicon | `pcntl_fork` | yes | persistent or fork-per-request |
 | **BSD**, **illumos** | `pcntl_fork` | yes | persistent or fork-per-request |
 | **Windows** x64 (via phar) | `php-cgi` subprocess | no | persistent workers, source-transform shimming |
 
-On Linux, the BSDs and macOS the server runs COW-forked workers at ~120KB each.
+On Linux, the BSDs and macOS the server runs COW-forked workers that share the loaded code and each pay for their own private pages -- 1.3–1.9 MB with nothing loaded, ~10 MB for a full CMS ([measured](docs/workers.md#what-a-worker-costs)).
 Windows has no `pcntl`, so it spawns `php-cgi` subprocesses for isolation:
 workers are still persistent and still shimmed, you simply do not get the COW
-memory saving. The 28-function source transform still clears state between
+memory saving. The 44-function source transform still clears state between
 requests.
 
 **PHP 8.6+ (epoll/kqueue):** the server detects PHP 8.6's native `Io\Poll` API

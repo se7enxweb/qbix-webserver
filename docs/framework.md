@@ -307,7 +307,7 @@ Each worker handles exactly **one request**, then exits. The parent immediately 
 
 This is safer than php-fpm, which reuses workers across requests and relies on `pm.max_requests` to periodically recycle them. With Qbix Server, every request gets a clean process. The fork cost (~0.5ms) is negligible compared to the bootstrap savings (~10–50ms).
 
-This is the default mode. Workers persist across requests, with all statics, globals, superglobals, and response headers reset between requests via a snapshot restore (~0.03ms). See [reset.md](docs/reset.md) for what resets, what doesn't, and how to write scripts that work in both modes.
+This is the default mode. Workers persist across requests, with all statics, globals, superglobals, and response headers reset between requests via a snapshot restore (about 0.5 ms for a small application, 4–5 ms for a large CMS). See [reset.md](docs/reset.md) for what resets, what doesn't, and how to write scripts that work in both modes.
 
 ### How PHP requests are handled
 

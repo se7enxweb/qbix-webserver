@@ -37,7 +37,7 @@ With [routing configured](#️-clean-url-routing-optional), handlers in `handler
 
 ```
 Browser: GET /api/users
-  → Parent forks child process (COW — ~200KB delta for typical handlers)
+  → Parent forks child process (COW — a worker's own pages come to 1.3–1.9 MB bare, ~10 MB for a full CMS)
   → Child runs handler (classes already loaded)
   → Child sends response and exits
   → OS reclaims all memory

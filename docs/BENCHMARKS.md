@@ -4,7 +4,7 @@ All measurements on a single-core container, PHP 8.3.6, Ubuntu 24. Each server r
 
 ## Summary
 
-**1. Over 100× more workers on the same RAM.** A typical handler uses ~200KB of private pages (measured via `/proc/smaps_rollup`). The framework's 42MB stays shared via COW. One GB of RAM: 24 fpm workers vs 5,000 octane workers.
+**1. Many more workers on the same RAM.** Each worker holds a fixed ~1.3 MB of private pages from the moment it forks, plus what its requests write: 150–250 KB more for a typical handler, about 10 MB in all for a full CMS (measured via `/proc/smaps_rollup`, 2026-09-26; see [what a worker costs](workers.md#what-a-worker-costs)). The framework stays shared via COW. One GB of RAM: 24 fpm workers vs roughly 500 small octane workers, or about 90 running a full CMS -- and one pool stops below about 1,000 workers with the default `stream_select` event loop.
 
 **2. PHP reuses the parent's heap.** Children do not allocate new memory chunks. The parent's pre-allocated heap is reused via COW. Only the 4KB pages the child actually writes to are copied by the kernel.
 
@@ -70,7 +70,7 @@ Static files are served by the parent process directly — no fork, no worker di
 |---|---|---|
 | Cold start (fresh process) | 48.2ms | full PHP + framework bootstrap |
 | Fork after preload | 8.8ms | `pcntl_fork()` syscall |
-| **Octane (snapshot restore)** | **0.05ms** | reflection-based static reset |
+| **Octane (snapshot restore)** | **0.3–0.9 ms** statics; 0.5–4.6 ms whole reset (small app to large CMS) | reflection-based static reset |
 | fpm warm worker | 0.002ms | nothing (classes stay loaded) |
 
 The Qbix Platform + Users plugin bootstrap costs 48ms cold (354 classes, config parsing, route compilation, autoloader setup). OPcache doesn't help in CLI mode — shared-memory setup cost exceeds compilation savings for a single process. But in our model the parent compiles once and children inherit the OPcache via COW (verified: forked children see all 32+ cached scripts).
@@ -138,18 +138,24 @@ Measured from `/proc/PID/smaps_rollup` Private pages — the gold standard for C
 
 **PHP does not allocate new heap chunks in children.** The parent pre-allocates a 4MB heap; children reuse it via COW. Only the specific 4KB pages the child writes to are copied by the kernel. This is why the private delta for a typical handler is just 150–236 KB — it's literally the pages containing the variables the handler modified.
 
+That delta comes on top of a fixed cost every worker has from the moment it
+forks -- page tables, its own stack, the allocator pages it touches at start --
+measured at about 1.2–1.3 MB of private memory for the server alone. The table
+below is the delta per workload; the workers-per-GB column counts both.
+
 ### By workload
 
-| Request type | Private delta | Ratio | Workers per GB |
+| Request type | Private delta per request | Private per worker (with the fixed ~1.3 MB) | Workers per GB |
 |---|---|---|---|
-| Minimal (config read) | 132–160 KB | **270–306×** | ~6,500 |
-| Typical handler (API/page) | 152–236 KB | **182–266×** | ~4,300 |
-| Heavy response (1K items) | 772 KB–1.0 MB | **41–52×** | ~1,000 |
-| Very heavy (10K DB rows) | ~8.6 MB | **5×** | ~120 |
+| Minimal (config read) | 132–160 KB | ~1.45 MB | ~550–700 |
+| Typical handler (API/page) | 152–236 KB | ~1.5 MB | ~500–650 |
+| Heavy response (1K items) | 772 KB–1.0 MB | ~2.2 MB | ~400 |
+| Very heavy (10K DB rows) | ~8.6 MB | ~10 MB | ~100 |
+| Full CMS (Exponential, measured live) | -- | ~10 MB | ~90 |
 
 For comparison, fpm on 1 GB: **~24 workers** (each loads the framework independently).
 
-The "over 100×" claim holds for every workload except bulk data transfers (10K+ database rows in memory). Typical web requests — rendering a page, serving an API response — cost 150–250 KB private and share over 99% of the parent's memory.
+Against fpm's ~42 MB per worker, a small worker is about 25–30× cheaper and a full CMS worker about 4×. Typical web requests — rendering a page, serving an API response — add 150–250 KB private on top of a worker's fixed ~1.3 MB, and share everything the parent loaded. (An earlier version of this page divided a GB by the per-request delta alone, which left out the fixed cost and gave 4,000–6,500 workers per GB.)
 
 ### Summary
 
@@ -158,7 +164,7 @@ The "over 100×" claim holds for every workload except bulk data transfers (10K+
 | Per-worker memory | ~42MB | ~0.2–8.6MB (COW) | ~0.2–8.6MB (COW) |
 | Typical workers/GB | ~24 | **~780** | ~780 forks |
 | State isolation | statics leak | snapshot reset | process death |
-| State reset cost | n/a | 0.05ms | 8ms (fork) |
+| State reset cost | n/a | 0.5 ms small app, 4.6 ms large CMS (measured 2026-09-26) | 8ms (fork) |
 
 ## WebSocket and rooms
 
@@ -196,7 +202,7 @@ As I/O latency increases (simulating DB contention under load), the gap widens:
 
 At 200ms I/O (a loaded database with contention), fpm's p50 is **10 seconds** because 200 requests queue behind 4 workers. Octane's p50 is **212ms** because 200 workers handle them in parallel.
 
-This is the scenario the user asked about: as more requests hit the same database, query times increase. fpm can't add workers without adding memory. Octane can — 200 workers at ~200KB each costs only ~40MB, leaving the rest of the RAM for the database itself.
+This is the scenario the user asked about: as more requests hit the same database, query times increase. fpm can't add workers without adding memory. Octane can — 200 small workers measured at about 320 MB PSS in all, where 200 fpm workers would need over 8 GB, leaving the rest of the RAM for the database itself.
 
 ### --app mode and fork/req (50ms I/O, c=200)
 

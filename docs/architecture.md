@@ -34,13 +34,13 @@ Persistent workers with automatic state reset. Combines fpm's throughput with fo
 php qbixserver.php --app=/path/to/myapp --workers=40
 ```
 
-The parent preloads your framework (classes, config, routes, autoloader), takes a snapshot of every static property on every user-defined class, then forks N workers. Each worker handles requests in a loop. Between requests, the snapshot is restored — all statics, globals, superglobals, and response state are reset to their preloaded values. Cost: ~0.05ms, vs ~8ms for a full fork.
+The parent preloads your framework (classes, config, routes, autoloader), takes a snapshot of every static property on every user-defined class, then forks N workers. Each worker handles requests in a loop. Between requests, the snapshot is restored — all statics, globals, superglobals, and response state are reset to their preloaded values. Cost: about 0.5 ms for a small application and 4–5 ms for a CMS with ~600 classes ([measured](workers.md#what-a-worker-costs)), vs ~8ms for a full fork.
 
 ### What gets reset between requests
 
 | Category | Reset method | Cost |
 |---|---|---|
-| Class static properties | `ReflectionProperty::setValue()` from snapshot | 0.05ms |
+| Class static properties | `ReflectionProperty::setValue()` from snapshot | 0.28 ms (424 classes) to 0.91 ms (586) |
 | `$GLOBALS` (user-defined) | Removed entirely | < 0.01ms |
 | `$_GET`, `$_POST`, `$_REQUEST` | Cleared, repopulated from new request | 0ms |
 | `$_COOKIE` | Cleared, repopulated from `Cookie:` header | 0ms |
@@ -104,9 +104,9 @@ On a 200MB memory budget with 50ms I/O workloads:
 | Mode | Workers | req/s | p50 | Memory |
 |---|---|---|---|---|
 | fpm | 4 × 42MB | 78 | 505ms | 168MB |
-| **octane** | **100 × ~200KB** | **1,060** | **56ms** | **~8MB** |
+| **octane** | **100 × ~1.5–1.9 MB** | **1,060** | **56ms** | **~160–200MB** |
 
-Octane uses **3× less RAM** for **14× more throughput** at **9× lower latency.**
+Octane uses **about the same RAM** for **14× more throughput** at **9× lower latency.** (Memory measured as PSS, 2026-09-26: 50 bare workers came to 108 MB, 200 to 321 MB; see [what a worker costs](workers.md#what-a-worker-costs). The throughput and latency figures are from the original benchmark.)
 
 ### Auto-introspection
 
@@ -146,7 +146,7 @@ A few rules of thumb:
 | (default) | fork per request | maximum isolation, simple scripts |
 | `--workers=N` | persistent workers + snapshot | production: throughput + memory efficiency |
 
-Both modes preload your framework before handling requests. The difference is whether the preloaded state is inherited via fork (8ms) or reused in a loop with snapshot restore (0.05ms).
+Both modes preload your framework before handling requests. The difference is whether the preloaded state is inherited via fork (8ms) or reused in a loop with snapshot restore (about 0.5 ms small, 4–5 ms for a large CMS).
 
 ### Configuration
 

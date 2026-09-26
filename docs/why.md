@@ -1,6 +1,6 @@
 ## 🏎️ Why Not php-fpm?
 
-php-fpm re-bootstraps the framework on every request (10–50ms), uses ~42MB per worker, and leaks statics between requests. Qbix Server loads the framework once at startup, keeps workers persistent, resets all state in 0.03ms via Reflection + 38 function shims, and fits each worker in ~120KB thanks to copy-on-write.
+php-fpm re-bootstraps the framework on every request (10–50ms), uses ~42MB per worker, and leaks statics between requests. Qbix Server loads the framework once at startup, keeps workers persistent, resets all state between requests via Reflection and 44 function shims (about 0.5 ms for a small application, 4–5 ms for a large CMS), and shares the loaded framework between workers by copy-on-write, so each worker pays only for its own private pages: 1.3–1.9 MB with nothing loaded, about 10 MB for a full CMS ([measured](workers.md#what-a-worker-costs)).
 
 ```
 php-fpm:
@@ -16,14 +16,14 @@ Qbix Server:
     → fork workers (inherit everything via COW)
 
   Every request:
-    Worker receives request → run your code → restore snapshot (0.03ms)
+    Worker receives request → run your code → restore snapshot (~0.5 ms small app, ~4.6 ms large CMS)
 
-  Cost: 120KB per worker. 400+ workers on 200MB. 1,060 req/s at 50ms I/O.
+  Cost: 1.3–1.9 MB private per worker (bare). ~100 workers on 200MB. 1,060 req/s at 50ms I/O.
 ```
 
-Three things fpm can't do: (1) persistent workers that don't leak state — Qbix resets 28 shimmed functions + all statics between requests, fpm resets nothing. (2) Thousands of workers on the same RAM — COW means each worker only pays for the pages it writes, not the 30MB of loaded framework. (3) Run unmodified blocking PHP code at high concurrency — when workers cost 120KB each, you can have enough of them that blocking I/O doesn't matter.
+Three things fpm can't do: (1) persistent workers that don't leak state — Qbix resets 44 shimmed functions + all statics between requests, fpm resets nothing. (2) Many more workers on the same RAM — COW means each worker only pays for the pages it writes, not the loaded framework: a few MB each instead of 42MB, up to the event loop's ceiling of about 1,000 per pool. (3) Run unmodified blocking PHP code at high concurrency — when workers cost a few MB each, you can have enough of them that blocking I/O doesn't matter.
 
-**The trick that makes it all work: fork after preload.** The server loads your entire framework — every class, every route, every config file — into a single parent process. Then it calls `pcntl_fork()` to create workers. The kernel doesn't copy the parent's 30MB of memory; it marks the pages copy-on-write. Workers share every loaded class, every compiled route, every cached config. They only pay for the pages they actually write to during the request — measured at 30 pages = 120KB for a WordPress-like workload. This is pure userland PHP. No kernel module, no C extension, no custom allocator. Just `pcntl_fork()` after loading everything, and the OS does the rest.
+**The trick that makes it all work: fork after preload.** The server loads your entire framework — every class, every route, every config file — into a single parent process. Then it calls `pcntl_fork()` to create workers. The kernel doesn't copy the parent's 30MB of memory; it marks the pages copy-on-write. Workers share every loaded class, every compiled route, every cached config. They only pay for the pages they write to after the fork — the allocator's arenas, each request's objects, the application's caches — measured at 1.3–1.9 MB per worker for the server alone and about 10 MB for a full CMS. This is pure userland PHP. No kernel module, no C extension, no custom allocator. Just `pcntl_fork()` after loading everything, and the OS does the rest.
 
 ### The numbers, honestly
 
@@ -32,15 +32,15 @@ Three things fpm can't do: (1) persistent workers that don't leak state — Qbix
 | **CPU-bound (WP-like)** | ~350 req/s | ~400 req/s | **2,294 req/s** |
 | **I/O 50ms (c=200)** | 78 req/s | ~300* req/s | **1,060 req/s** |
 | **I/O 200ms (c=400)** | 20 req/s | ~200–500* req/s | **488 req/s** (200w) |
-| **Memory / worker** | ~42MB | ~42MB | **~200KB** (COW) |
-| **Workers on 200MB** | 4 | 4 | **100–400** |
-| **State isolation** | Statics leak | Statics leak | **Snapshot reset (28 shims)** |
+| **Memory / worker** | ~42MB | ~42MB | **1.3–1.9 MB** bare, ~10 MB full CMS (COW, private) |
+| **Workers on 200MB** | 4 | 4 | **~100** bare, ~15 full CMS |
+| **State isolation** | Statics leak | Statics leak | **Snapshot reset (44 shims)** |
 | **Unmodified WordPress** | ✅ | ❌ no adapter | **✅** (source transform) |
 | **Requires extension** | — | **Yes** (PECL) | **No** |
 
 \* Swoole numbers with `Runtime::enableCoroutine()`. Without coroutine hooks, Swoole matches fpm. WordPress and most Laravel packages use blocking I/O.
 
-With `"forkPerRequest": true`, Qbix falls back to fork-per-request mode (7ms fork overhead) — still 2–5× fpm on I/O workloads because each child uses ~200KB instead of 42MB. Useful for shared hosting with untrusted code.
+With `"forkPerRequest": true`, Qbix falls back to fork-per-request mode (7ms fork overhead) — still 2–5× fpm on I/O workloads because each child uses a few MB instead of 42MB. Useful for shared hosting with untrusted code.
 
 > **Important:** Database connections must NOT be opened before `fork()`. A TCP connection is a single file descriptor — two processes writing to the same socket would interleave packets and corrupt the protocol. Each forked child opens its own connection. This is the same model as php-fpm (one connection per request) and is what connection poolers like PgBouncer or ProxySQL are designed for.
 
@@ -80,7 +80,7 @@ If you're looking beyond php-fpm, you've probably seen FrankenPHP and Swoole. He
 | **Concurrent capacity** | Limited by worker memory | Limited by worker memory | **100–300× more** (COW, measured) |
 | **WebSocket rooms** | No | Manual | ✅ Built-in — rooms are forked processes |
 | **Code signing** | No | No | ✅ M-of-N manifest signing |
-| **Unmodified WordPress** | ✅ | ❌ | ✅ (28-function shim) |
+| **Unmodified WordPress** | ✅ | ❌ | ✅ (44-function shim) |
 
 ### The state isolation advantage
 
