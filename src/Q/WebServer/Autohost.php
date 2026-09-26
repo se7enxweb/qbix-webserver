@@ -376,6 +376,12 @@ class Q_WebServer_Autohost
 		$entry = date('c') . " PROVISIONED $hostname" . ($certResult ? " cert=ok" : " cert=none") . "\n";
 		file_put_contents($logFile, $entry, FILE_APPEND);
 
+		// If a certificate for this host is already on disk (a re-provision, or
+		// one issued in an earlier run), present it for SNI now. A first-time
+		// certificate is issued by the background job above and picked up on the
+		// next start or renewal.
+		self::registerDomainCert($hostname);
+
 		return ['success' => true, 'hostname' => $hostname, 'cert' => !empty($certResult['success'])];
 	}
 
@@ -476,12 +482,73 @@ class Q_WebServer_Autohost
 			if (!empty($result['success'])) {
 				$renewed++;
 				self::log("Renewed: $d");
+				// Present the renewed certificate for SNI without a restart.
+				self::registerDomainCert($d);
 			} else {
 				$errors[] = $d . ': ' . ($result['error'] ?? 'unknown');
 				self::log("Renewal failed: $d — " . ($result['error'] ?? 'unknown'));
 			}
 		}
 		return ['renewed' => $renewed, 'errors' => $errors];
+	}
+
+	/**
+	 * The on-disk certificate pair for a provisioned host, as ACME wrote it
+	 * (certDir/<host>/fullchain.pem and privkey.pem), or null when it is not
+	 * there yet.
+	 *
+	 * @method domainCertFiles
+	 * @static
+	 * @param {string} $hostname
+	 * @return {array|null} array($certPath, $keyPath)
+	 */
+	static function domainCertFiles($hostname)
+	{
+		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		$dir = rtrim($certDir, '/\\') . '/' . $hostname;
+		$cert = $dir . '/fullchain.pem';
+		$key = $dir . '/privkey.pem';
+		return (is_file($cert) and is_file($key)) ? array($cert, $key) : null;
+	}
+
+	/**
+	 * Present a provisioned host's certificate for its own TLS handshakes (SNI),
+	 * if the pair is on disk. Called after provisioning or renewal so the right
+	 * certificate is served for the host without a restart; a no-op while the
+	 * certificate is still pending.
+	 *
+	 * @method registerDomainCert
+	 * @static
+	 * @param {string} $hostname
+	 * @return {boolean}
+	 */
+	static function registerDomainCert($hostname)
+	{
+		$files = self::domainCertFiles($hostname);
+		if (!$files or !class_exists('Q_WebServer')) return false;
+		return Q_WebServer::registerDomainCert($hostname, $files[0], $files[1]);
+	}
+
+	/**
+	 * Register every provisioned host's certificate for SNI. Called once at
+	 * server start so certificates provisioned in earlier runs are presented
+	 * for their host names from the first handshake.
+	 *
+	 * @method registerDomainCerts
+	 * @static
+	 * @return {integer} how many hosts were registered
+	 */
+	static function registerDomainCerts()
+	{
+		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		if (!is_dir($certDir)) return 0;
+		$n = 0;
+		foreach (scandir($certDir) as $d) {
+			if ($d === '.' or $d === '..' or $d === 'account.pem') continue;
+			if (!is_dir($certDir . '/' . $d)) continue;
+			if (self::registerDomainCert($d)) $n++;
+		}
+		return $n;
 	}
 
 	/**

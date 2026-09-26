@@ -107,6 +107,9 @@ class Q_WebServer_Certs
 		}
 
 		if ($valid) $valid = self::activate();
+		// Per-domain certificates for SNI stand beside the default pair; the
+		// default is what activate() just set up and what unmatched names get.
+		self::registerConfiguredDomains();
 		if ($valid) self::watch();
 		return $valid;
 	}
@@ -337,6 +340,21 @@ class Q_WebServer_Certs
 	static $activeKey = null;
 
 	/**
+	 * Per-domain certificates for SNI selection, keyed by lowercased host name:
+	 *   host => array('activeCert' => copy, 'activeKey' => copy,
+	 *                 'certPath' => source, 'keyPath' => source)
+	 * Each entry keeps its own private per-process copy, made and named the
+	 * same way as the default pair in activate(), so a renewal or a second
+	 * server on the same directory never pulls a domain's certificate out from
+	 * under a running handshake. The default pair in $activeCert/$activeKey is
+	 * untouched: it is what a client with no SNI, or an SNI that matches no
+	 * registered host, is still served.
+	 * @property $domainCerts
+	 * @static
+	 */
+	static $domainCerts = array();
+
+	/**
 	 * Copy the current pair to files only this server writes, and have the
 	 * listener read those. PHP reads the certificate files again for every
 	 * handshake, so a listener pointed at the configured files would present
@@ -424,6 +442,121 @@ class Q_WebServer_Certs
 		}
 		if (DS === '/' and is_dir('/proc/self')) return !is_dir('/proc/' . $pid);
 		return false;
+	}
+
+	/**
+	 * Register a certificate to present when a TLS client asks for $hostname by
+	 * SNI. The pair is validated and copied to files private to this process,
+	 * exactly as the default pair is in activate(); the copy, not the source,
+	 * is what the listener reads, so a half-written renewal or another server's
+	 * cleanup can never fail this server's handshakes. Returns false and
+	 * registers nothing when the pair is missing or does not belong together,
+	 * so the default certificate keeps standing in.
+	 *
+	 * The copy is named active-<port>-dom<hosthash>-<fingerprint>-<pid> -- four
+	 * segments where the default copy has three, so activate()'s cleanup and
+	 * copyRemovable() never touch a domain copy, and vice versa.
+	 *
+	 * @method registerDomain
+	 * @static
+	 * @param {string} $hostname
+	 * @param {string} $certPath source certificate (fullchain) path
+	 * @param {string} $keyPath source private key path
+	 * @return {boolean}
+	 */
+	static function registerDomain($hostname, $certPath, $keyPath)
+	{
+		$hostname = strtolower(trim((string) $hostname));
+		if ($hostname === '') return false;
+		$c = ($certPath and $keyPath) ? Q_WebServer_Certificate::fromFiles($certPath, $keyPath) : null;
+		if (!$c or !$c->isUsable()) return false;
+		$port = (int) Q_Config::get('Q', 'web', 'https', 'port', 443);
+		$fp = substr(preg_replace('/[^0-9a-f]/', '', strtolower($c->fingerprint())), 0, 16) ?: 'x';
+		$tag = substr(sha1($hostname), 0, 12);
+		$pid = self::pid();
+		foreach (array(Q_WebServer_Certificate_Store::defaultDir(), self::certsDir()) as $dir) {
+			if (!is_dir($dir)) @mkdir($dir, 0755, true);
+			$cert = $dir . DS . "active-$port-dom$tag-$fp-$pid.pem";
+			$key = $dir . DS . "active-$port-dom$tag-$fp-$pid.key";
+			if (Q_WebServer_Certificate_Store::writeAtomic($key, $c->keyPem, 0600)
+				and Q_WebServer_Certificate_Store::writeAtomic($cert, $c->certPem, 0644)) {
+				self::$domainCerts[$hostname] = array(
+					'activeCert' => $cert, 'activeKey' => $key,
+					'certPath' => $certPath, 'keyPath' => $keyPath,
+				);
+				// This process's earlier copies for this same host, and those
+				// of processes that are gone. A running server's copies for the
+				// host are left in place, as with the default pair.
+				foreach ((array) glob($dir . DS . "active-$port-dom$tag-*") as $old) {
+					if ($old === $cert or $old === $key) continue;
+					if (self::domainCopyRemovable($old, $pid)) @unlink($old);
+				}
+				return true;
+			}
+		}
+		Q_WebServer_Certificate_Events::emit('error', array('reason' => 'could not write the domain certificate copy for ' . $hostname));
+		return false;
+	}
+
+	/**
+	 * Whether a per-domain active copy may be removed by process $pid: its own,
+	 * or one whose process is no longer running. Never a running process's.
+	 * @method domainCopyRemovable
+	 * @static
+	 * @param {string} $file
+	 * @param {int} $pid
+	 * @return {boolean}
+	 */
+	static function domainCopyRemovable($file, $pid)
+	{
+		if (!preg_match('/^active-\d+-dom[0-9a-f]+-[0-9a-fx]+-(\d+)\.(pem|key)$/', basename($file), $m)) return false;
+		$owner = (int) $m[1];
+		if ($owner === (int) $pid) return true;
+		return self::processGone($owner);
+	}
+
+	/**
+	 * The SNI certificate map for a stream context's 'SNI_server_certs' option:
+	 *   host => array('local_cert' => copy, 'local_pk' => copy)
+	 * Built from the private per-process copies registerDomain() made. OpenSSL
+	 * presents the matching certificate for a client's SNI name; the context's
+	 * own local_cert still covers every name not listed here, so a single-cert
+	 * server (an empty map) behaves exactly as before.
+	 * @method sniCerts
+	 * @static
+	 * @return {array}
+	 */
+	static function sniCerts()
+	{
+		$map = array();
+		foreach (self::$domainCerts as $host => $info) {
+			$cert = isset($info['activeCert']) ? $info['activeCert'] : null;
+			$key = isset($info['activeKey']) ? $info['activeKey'] : null;
+			if ($cert and $key and is_file($cert) and is_file($key)) {
+				$map[$host] = array('local_cert' => $cert, 'local_pk' => $key);
+			}
+		}
+		return $map;
+	}
+
+	/**
+	 * Register any per-domain certificates named in configuration for SNI:
+	 *   Q.web.https.domains = { "host": { "cert": path, "key": path }, ... }
+	 * They stand beside the default certificate; a handshake whose SNI matches
+	 * one is answered with it, everything else with the default.
+	 * @method registerConfiguredDomains
+	 * @static
+	 */
+	static function registerConfiguredDomains()
+	{
+		$domains = Q_Config::get('Q', 'web', 'https', 'domains', array());
+		if (!is_array($domains)) return;
+		foreach ($domains as $host => $spec) {
+			if (!is_array($spec)) continue;
+			$cert = isset($spec['cert']) ? $spec['cert'] : (isset($spec['certPath']) ? $spec['certPath'] : null);
+			$key = isset($spec['key']) ? $spec['key'] : (isset($spec['keyPath']) ? $spec['keyPath'] : null);
+			if ($cert and $key) self::registerDomain($host, $cert, $key);
+		}
 	}
 
 	/** Whether a certificate and key file are usable together. */

@@ -350,6 +350,14 @@ class Q_WebServer
 			$domain = Q::ifset($httpsConfig, 'domain', '');
 			$certsReady = Q_WebServer_Certs::init($domain, $host);
 
+			// Per-domain certificates already on disk (autohost / ACME) join the
+			// SNI map before the listener binds, so the right certificate is
+			// presented for each host name from the first handshake.
+			if (class_exists('Q_WebServer_Autohost')
+				and method_exists('Q_WebServer_Autohost', 'registerDomainCerts')) {
+				Q_WebServer_Autohost::registerDomainCerts();
+			}
+
 			if ($certsReady) {
 				self::startTls($host, $httpsPort);
 			} else {
@@ -561,6 +569,16 @@ class Q_WebServer
 		// A renewed certificate is put on this same context by reloadTls(),
 		// so the next handshake presents it without re-binding, and every
 		// connection accepted after that point agrees on which one it got.
+		// Per-domain certificates for SNI, if any were registered (autohost /
+		// ACME provisioning, or Q.web.https.domains). OpenSSL presents the one
+		// whose name matches the client's SNI; local_cert above stays the
+		// default for every unmatched name, so a single-cert server -- an empty
+		// map -- keeps exactly the behaviour it had. This does not change the
+		// cipher suite or the minimum TLS version: only which certificate is
+		// presented. The context is shared by every accepted connection, which
+		// is what still lets a session be resumed.
+		$sniCerts = Q_WebServer_Certs::sniCerts();
+
 		$tlsContext = stream_context_create(array('ssl' => array(
 			'local_cert' => Q_WebServer_Certs::$activeCert ?: Q_WebServer_Certs::$certPath,
 			'local_pk' => Q_WebServer_Certs::$activeKey ?: Q_WebServer_Certs::$keyPath,
@@ -570,7 +588,8 @@ class Q_WebServer
 			'honor_cipher_order' => true,
 			'single_ecdh_use' => true,
 			'single_dh_use' => true,
-		) + (self::http2Enabled()
+		) + ($sniCerts ? array('SNI_server_certs' => $sniCerts) : array())
+		  + (self::http2Enabled()
 			? array('alpn_protocols' => 'h2,http/1.1')
 			: array()),
 			'socket' => array('backlog' => self::listenBacklog()),
@@ -1458,6 +1477,32 @@ class Q_WebServer
 		} else {
 			Q_WebServer_Certificate_Events::emit('error', array('reason' => 'could not update the HTTPS listener with ' . $cert));
 		}
+	}
+
+	/**
+	 * Register a certificate to present for $hostname's TLS handshakes (SNI).
+	 * Called by autohost after provisioning a certificate for a domain, and by
+	 * configuration at startup. The certificate is stored as a private
+	 * per-process copy by Q_WebServer_Certs (the same discipline as the default
+	 * pair), and the live listener's SNI map is updated so the next handshake
+	 * for that name presents it -- no restart, and the default certificate is
+	 * left in front of every other name.
+	 *
+	 * @method registerDomainCert
+	 * @static
+	 * @param {string} $hostname
+	 * @param {string} $certPath source certificate (fullchain) path
+	 * @param {string} $keyPath source private key path
+	 * @return {boolean}
+	 */
+	static function registerDomainCert($hostname, $certPath, $keyPath)
+	{
+		$ok = Q_WebServer_Certs::registerDomain($hostname, $certPath, $keyPath);
+		if ($ok and self::$tlsSocket and is_resource(self::$tlsSocket)) {
+			@stream_context_set_option(self::$tlsSocket, 'ssl',
+				'SNI_server_certs', Q_WebServer_Certs::sniCerts());
+		}
+		return $ok;
 	}
 
 	/** @var string|null the address startTls() bound, for a late start */
