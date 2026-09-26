@@ -76,8 +76,11 @@ function cache_tmpdir($tag)
 {
 	$d = sys_get_temp_dir() . DS . 'qbix-' . $tag . '-' . getmypid() . '-' . mt_rand();
 	@mkdir($d, 0700, true);
-	register_shutdown_function(function () use ($d) {
-		if (!is_dir($d)) return;
+	$owner = getmypid();
+	register_shutdown_function(function () use ($d, $owner) {
+		// Only the process that made it: a forked child exiting must not
+		// pull the directory out from under its parent.
+		if (getmypid() !== $owner or !is_dir($d)) return;
 		$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($d,
 			FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
 		foreach ($it as $f) $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());

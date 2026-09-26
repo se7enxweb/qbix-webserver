@@ -50,7 +50,7 @@ if (!extension_loaded('apcu')) { printf("  skip  APCu is not loaded in this PHP\
 $on = cache_child(__FILE__, 'on', array('apc.enable_cli' => 1, 'apc.shm_size' => '32M'));
 check('APCu on: the old keys are there', array_keys(array_intersect_key($on ?? array(), array_flip(array('hits', 'misses', 'hitRate')))), array('hits', 'misses', 'hitRate'));
 check('APCu on: one miss, three hits', array($on['misses'] ?? null, $on['hits'] ?? null), array(1, 3));
-check('APCu on: one from APCu, one from disk, one 304 off the index', $on['hitsFrom'] ?? null, array('index' => 1, 'apcu' => 1, 'disk' => 1));
+check('APCu on: one from APCu, one from disk, one 304 off the index', $on['hitsFrom'] ?? null, array('index' => 1, 'memory' => 0, 'apcu' => 1, 'disk' => 1));
 check('APCu on: enabled, nothing refused', array($on['apcu']['enabled'] ?? null, $on['apcu']['storeFailures'] ?? null), array(true, 0));
 check('APCu on: the segment size is reported', ($on['apcu']['memory']['size'] ?? 0) > 0, true);
 check('APCu on: available is within it', ($on['apcu']['memory']['available'] ?? -1) > 0
@@ -60,7 +60,7 @@ check('APCu on: entries counted (page + validators)', ($on['apcu']['entries'] ??
 check('APCu on: expunges reported', isset($on['apcu']['expunges']), true);
 
 $off = cache_child(__FILE__, 'off', array('apc.enable_cli' => 0));
-check('APCu off: every hit is a disk hit', $off['hitsFrom'] ?? null, array('index' => 0, 'apcu' => 0, 'disk' => 3));
+check('APCu off: every hit is a disk hit', $off['hitsFrom'] ?? null, array('index' => 0, 'memory' => 0, 'apcu' => 0, 'disk' => 3));
 check('APCu off: hits add up', ($off['hits'] ?? null), 3);
 check('APCu off: reported as not enabled, with the reason', array($off['apcu']['enabled'] ?? null, count($off['apcu']['warnings'] ?? array())), array(false, 1));
 check('APCu off: no memory figures pretending to be zero', array_key_exists('memory', $off['apcu'] ?? array()), false);

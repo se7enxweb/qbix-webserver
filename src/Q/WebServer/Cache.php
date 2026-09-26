@@ -56,8 +56,34 @@ class Q_WebServer_Cache
 	static $hits = 0;
 	static $misses = 0;
 
-	/** @var array hits by where they were answered from: a 304 off the validator index, APCu, disk */
-	static $hitsFrom = array('index' => 0, 'apcu' => 0, 'disk' => 0);
+	/** @var array hits by where they were answered from: a 304 off the validator index, the server's own memory, APCu, disk */
+	static $hitsFrom = array('index' => 0, 'memory' => 0, 'apcu' => 0, 'disk' => 0);
+
+	/**
+	 * The in-process layer in front of APCu: the hottest entries, kept in the
+	 * server process itself, so a hit costs neither an unserialise nor a copy
+	 * out of shared memory. Off (0) by default. Q.web.cache.memory.*
+	 * @property $memoryMaxEntries
+	 * @type {integer}
+	 */
+	static $memoryMaxEntries = 0;
+	/** @var int most bytes of bodies held in memory */
+	static $memoryMaxBytes = 33554432;
+	/** @var int largest body kept in memory */
+	static $memoryMaxEntrySize = 65536;
+	/** @var int entries dropped to stay within the limits */
+	static $memoryEvictions = 0;
+
+	/** @var array key => entry, least recently used first */
+	private static $memory = array();
+	/** @var int bytes of bodies in $memory */
+	private static $memoryBytes = 0;
+	/** @var int the one process whose memory may answer: the one that ran init() */
+	private static $memoryPid = 0;
+	/** @var string|null the epoch token the memory was filled under */
+	private static $memoryEpoch = null;
+	/** @var int when the epoch was last read */
+	private static $memoryEpochChecked = -1;
 
 	/** @var int apcu_store() calls that failed: a full segment, or APCu unusable */
 	static $apcuStoreFailures = 0;
@@ -241,6 +267,14 @@ class Q_WebServer_Cache
 		self::$apcuMaxSize = (int) Q::ifset($apcu, 'maxSize', 65536);
 		$wanted = Q::ifset($apcu, 'enabled', null);
 		self::$apcuEnabled = self::apcuUsable($wanted === null ? null : (bool) $wanted);
+		$memory = Q::ifset($config, 'memory', array());
+		self::$memoryMaxEntries = max(0, (int) Q::ifset($memory, 'maxEntries', 0));
+		self::$memoryMaxBytes = max(0, (int) Q::ifset($memory, 'maxBytes', 33554432));
+		self::$memoryMaxEntrySize = max(0, (int) Q::ifset($memory, 'maxEntrySize', 65536));
+		self::$memory = array();
+		self::$memoryBytes = 0;
+		self::$memoryPid = function_exists('getmypid') ? getmypid() : 0;
+		self::$memoryEpochChecked = -1;
 		self::$defaultTtl = (int) Q::ifset($config, 'defaultTtl', 0);
 		self::$skipCookies = Q::ifset($config, 'skip', 'cookies', array('Q_sid', 'PHPSESSID'));
 		self::$staleWhileRevalidate = (int) Q::ifset($config, 'staleWhileRevalidate', 0);
@@ -253,6 +287,104 @@ class Q_WebServer_Cache
 			self::$dir ? self::$dir . DIRECTORY_SEPARATOR . '.generation' : '');
 		self::$generationChecked = -1;
 		self::forgetOnAccessListChange();
+	}
+
+	// ── The in-process layer ────────────────────────────────────────────
+	//
+	// Only the process that ran init() -- the server -- answers from it. A
+	// worker forked afterwards inherits a copy that nobody keeps up to date,
+	// so it never reads it. Anything a worker changes reaches the server
+	// through the epoch file: purge(), clear() and a put() made outside the
+	// server write a new token into it, and the server, reading it at most
+	// once a second as it reads the generation marker, empties its memory
+	// when the token changes. A token rather than an mtime, so two changes
+	// within one second cannot be mistaken for one.
+
+	/** Whether this process answers from memory. */
+	private static function memoryActive()
+	{
+		return self::$memoryMaxEntries > 0
+			and self::$memoryPid === (function_exists('getmypid') ? getmypid() : 0);
+	}
+
+	/** Where the epoch token lives, or '' without a cache directory. */
+	private static function memoryEpochFile()
+	{
+		return self::$dir ? self::$dir . DIRECTORY_SEPARATOR . '.memory-epoch' : '';
+	}
+
+	/** Empty the memory when another process has changed the store since it was filled. */
+	private static function memoryCheckEpoch()
+	{
+		$now = time();
+		if ($now === self::$memoryEpochChecked) return;
+		self::$memoryEpochChecked = $now;
+		$file = self::memoryEpochFile();
+		$token = $file === '' ? '' : (string) @file_get_contents($file);
+		if ($token !== self::$memoryEpoch) {
+			if (self::$memoryEpoch !== null) self::memoryFlush();
+			self::$memoryEpoch = $token;
+		}
+	}
+
+	/** Tell the server's memory that the store changed under it. */
+	private static function memorySignal()
+	{
+		if (self::$memoryMaxEntries <= 0) return;
+		if (self::memoryActive()) self::memoryFlush();
+		$file = self::memoryEpochFile();
+		if ($file === '') return;
+		Q_WebServer_Modes::put($file, uniqid('', true), LOCK_EX, self::$fileMode);
+		// This process's own copy is current: it made the change.
+		if (self::memoryActive()) {
+			self::$memoryEpoch = (string) @file_get_contents($file);
+			self::$memoryEpochChecked = time();
+		}
+	}
+
+	/** @return {array|null} the entry held in memory for $key */
+	private static function memoryGet($key)
+	{
+		if (!self::memoryActive()) return null;
+		self::memoryCheckEpoch();
+		if (!isset(self::$memory[$key])) return null;
+		$entry = self::$memory[$key];
+		// Most recently used goes last; eviction takes from the front.
+		unset(self::$memory[$key]);
+		self::$memory[$key] = $entry;
+		return $entry;
+	}
+
+	/** Keep $entry in memory, within the limits, evicting the least recently used. */
+	private static function memoryPut($key, $entry)
+	{
+		if (!self::memoryActive()) return;
+		self::memoryCheckEpoch();
+		$size = strlen($entry['body'] ?? '');
+		if ($size > self::$memoryMaxEntrySize or $size > self::$memoryMaxBytes) return;
+		self::memoryDrop($key);
+		unset($entry['headers']['X-Cache'], $entry['headers']['Age']);
+		self::$memory[$key] = $entry;
+		self::$memoryBytes += $size;
+		while (self::$memory and (count(self::$memory) > self::$memoryMaxEntries
+		or self::$memoryBytes > self::$memoryMaxBytes)) {
+			$first = array_key_first(self::$memory);
+			self::memoryDrop($first);
+			self::$memoryEvictions++;
+		}
+	}
+
+	private static function memoryDrop($key)
+	{
+		if (!isset(self::$memory[$key])) return;
+		self::$memoryBytes -= strlen(self::$memory[$key]['body'] ?? '');
+		unset(self::$memory[$key]);
+	}
+
+	private static function memoryFlush()
+	{
+		self::$memory = array();
+		self::$memoryBytes = 0;
 	}
 
 	/**
@@ -519,6 +651,22 @@ class Q_WebServer_Cache
 		// copy also expired, be handed its own claim back as a refusal -- so
 		// the request that was supposed to render was served stale instead,
 		// and nothing ever rendered.
+		// The server's own memory first. It holds only fresh copies of what
+		// the stores below hold, so it answers only a fresh, current entry;
+		// anything else falls through to the one decision made below.
+		$held = self::memoryGet($key);
+		if ($held !== null) {
+			$expires = $held['expires'] ?? 0;
+			if (!self::isOldGeneration($held) and ($expires === 0 or $expires > time())) {
+				self::$hits++;
+				self::$hitsFrom['memory']++;
+				$held['headers']['X-Cache'] = 'HIT';
+				$held['headers']['Age'] = self::age($held);
+				return $held;
+			}
+			self::memoryDrop($key);
+		}
+
 		$entry = null;
 		$fromApcu = false;
 		if (self::$apcuEnabled) {
@@ -549,6 +697,7 @@ class Q_WebServer_Cache
 		if ($expires === 0 or $expires > time()) {
 			self::$hits++;
 			self::$hitsFrom[$fromApcu ? 'apcu' : 'disk']++;
+			self::memoryPut($key, $entry);
 			$entry['headers']['X-Cache'] = 'HIT';
 			$entry['headers']['Age'] = self::age($entry);
 			if (!$fromApcu and self::$apcuEnabled
@@ -783,6 +932,11 @@ class Q_WebServer_Cache
 			self::apcuStore('qcache:' . $key, $entry, self::apcuTtl($entry));
 		}
 
+		// Into the server's memory when this is the server; from anywhere
+		// else, tell the server its copy of this page may now be old.
+		if (self::memoryActive()) self::memoryPut($key, $entry);
+		else self::memorySignal();
+
 		// The validators, kept apart from the page they describe.
 		//
 		// A returning visitor's request is answered by comparing two short
@@ -830,6 +984,7 @@ class Q_WebServer_Cache
 	static function purge($pattern)
 	{
 		if (!self::$dir || !is_dir(self::$dir)) return;
+		self::memorySignal();
 
 		// If it looks like a regex (starts with a delimiter), match against files
 		$isRegex = (strlen($pattern) > 2 && $pattern[0] === $pattern[strlen($pattern)-1])
@@ -895,6 +1050,7 @@ class Q_WebServer_Cache
 				$f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
 			}
 		}
+		self::memorySignal();
 	}
 
 	/**
@@ -1637,6 +1793,14 @@ class Q_WebServer_Cache
 			'hitRate' => $total > 0 ? round(self::$hits / $total * 100, 1) : 0,
 			'stale' => self::$stale,
 			'hitsFrom' => self::$hitsFrom,
+			'memory' => array(
+				'enabled' => self::$memoryMaxEntries > 0,
+				'entries' => count(self::$memory),
+				'bytes' => self::$memoryBytes,
+				'maxEntries' => self::$memoryMaxEntries,
+				'maxBytes' => self::$memoryMaxBytes,
+				'evictions' => self::$memoryEvictions,
+			),
 			'apcu' => array(
 				'enabled' => self::$apcuEnabled,
 				'maxSize' => self::$apcuMaxSize,

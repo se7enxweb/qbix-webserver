@@ -116,7 +116,30 @@ says at startup when the cache is on and APCu is not doing its part:
 It also warns when `apc.use_request_time=1` (APCu would measure lifetimes from
 the server's start, so entries expire early) and when `apcu.maxSize` is not
 smaller than `apc.shm_size`. Setting `apcu.enabled` to `false` turns APCu off
-without any warning. A scheduled sweep removes expired files every
+without any warning.
+
+In front of APCu the server can keep the hottest pages in its own memory, so a
+hit costs neither an unserialise nor a copy out of shared memory. It is off until
+`memory.maxEntries` is set:
+
+```json
+{ "Q": { "web": { "cache": { "memory": { "maxEntries": 1000, "maxBytes": 33554432 } } } } }
+```
+
+It holds only fresh copies of pages the stores below hold, least recently used
+out first, within `maxEntries` pages and `maxBytes` of bodies, each body at most
+`maxEntrySize`. Every hit from it still checks the page's expiry and the
+generation marker, and the skip cookies, `Authorization` and the refresh header
+still bypass it. Only the server process answers from it; a worker never serves
+the copy it inherited. When application code in a worker calls `purge()` or
+`clear()`, or a page is stored outside the server, a token in `.memory-epoch`
+beside the entries changes, and the server empties its memory within a second --
+the same delay as the generation marker.
+
+What it saves depends on the size of the page. Measured on an 11-core host,
+server CPU per cached hit: about the same for a 3 KB gzipped page (~0.19 ms
+either way), about 12% less for a 44 KB one (0.23 → 0.20 ms). Worth turning on
+for large cached pages under heavy traffic; otherwise APCu alone is as fast. A scheduled sweep removes expired files every
 `sweep.every` seconds.
 
 ---
@@ -169,6 +192,9 @@ Every setting, with its default. All are under `Q.web.cache`.
 | `generationFile` | `<dir>/.generation` | The generation marker. |
 | `apcu.enabled` | when APCu is usable | Keep small entries in APCu as well as on disk. Usable means `apcu_enabled()`, so `apc.enable_cli=1` under the CLI. `true` when it is not usable warns and stays off. |
 | `apcu.maxSize` | `65536` | Largest body, in bytes, kept in APCu. |
+| `memory.maxEntries` | `0` | Pages kept in the server's own memory in front of APCu. `0` turns the layer off. |
+| `memory.maxBytes` | `33554432` | Most bytes of bodies kept in memory. |
+| `memory.maxEntrySize` | `65536` | Largest body, in bytes, kept in memory. |
 | `minifyHtml` | `false` | Minify HTML before it is stored. |
 | `middleOut` | `false` | Compress stored bodies against a shared dictionary. |
 | `fileMode` | `0666` less the umask | Mode of entry files. |
@@ -195,7 +221,8 @@ Every setting, with its default. All are under `Q.web.cache`.
 | `hits`, `misses`, `hitRate` | Since the server started. |
 | `stale` | Hits answered with an expired copy while it was rendered again. |
 | `hitsFrom.index` | Conditional requests answered `304` from the validator index, without the page. |
-| `hitsFrom.apcu`, `hitsFrom.disk` | Where the other hits were read from. Mostly `disk` with APCu enabled means it is not doing its part. |
+| `hitsFrom.memory`, `hitsFrom.apcu`, `hitsFrom.disk` | Where the other hits were read from. Mostly `disk` with APCu enabled means it is not doing its part. |
+| `memory` | The in-process layer: `enabled`, `entries`, `bytes`, `maxEntries`, `maxBytes`, `evictions`. |
 | `apcu.enabled` | Whether APCu is in use, after the checks under [Where it is kept](#where-it-is-kept). |
 | `apcu.warnings` | What those checks found, as said at startup. |
 | `apcu.storeFailures` | Stores APCu refused: a full segment, or APCu unusable. |

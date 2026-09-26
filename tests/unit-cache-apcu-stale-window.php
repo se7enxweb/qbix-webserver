@@ -65,9 +65,9 @@ if (!extension_loaded('apcu')) { printf("  skip  APCu is not loaded in this PHP\
 $r = cache_child(__FILE__, 'swr', array('apc.enable_cli' => 1, 'apc.use_request_time' => 0));
 check('the first request after expiry renders', array_key_exists('renderer', $r ?? array()) ? $r['renderer'] : 'missing', null);
 check('the next is answered STALE', $r['stale'] ?? null, 'STALE');
-check('...from APCu, not disk', $r['fromAfterExpiry'] ?? null, array('index' => 0, 'apcu' => 1, 'disk' => 0));
+check('...from APCu, not disk', $r['fromAfterExpiry'] ?? null, array('index' => 0, 'memory' => 0, 'apcu' => 1, 'disk' => 0));
 check('a stale page that dropped out of APCu is read from disk once, then from memory',
-	$r['fromAfterRefill'] ?? null, array('index' => 0, 'apcu' => 2, 'disk' => 1));
+	$r['fromAfterRefill'] ?? null, array('index' => 0, 'memory' => 0, 'apcu' => 2, 'disk' => 1));
 check('APCu keeps an entry for its lifetime plus the window', in_array($r['ttlWithWindow'] ?? 0, array(39, 40), true), true);
 check('without a window, for its lifetime', in_array($r['ttlWithoutWindow'] ?? 0, array(9, 10), true), true);
 check('past the window it is a miss', array_key_exists('pastWindow', $r ?? array()) ? $r['pastWindow'] : 'missing', null);
