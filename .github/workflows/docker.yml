@@ -1,7 +1,7 @@
 name: Docker images
 
 # The server on the official PHP image, one image per PHP version x variant,
-# for amd64 and arm64: ghcr.io/se7enxweb/qbix-webserver. docs/docker.md has
+# for amd64 and arm64: ghcr.io/se7enxweb/exponential-velocity. docs/docker.md has
 # the tags and what each variant carries; packaging/docker/ builds them.
 #
 # Every run builds and tests (the server answers /Q/health, and the engine's

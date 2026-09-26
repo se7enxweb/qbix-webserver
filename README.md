@@ -104,19 +104,19 @@ no version of PHP on the machine to conflict with.
 
 ```bash
 # Linux x86_64
-curl -LO https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver-linux-x86_64
+curl -LO https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver-linux-x86_64
 chmod +x qbixserver-linux-x86_64 && ./qbixserver-linux-x86_64
 
 # Linux aarch64 -- also what a Raspberry Pi 4 or 5 runs
-curl -LO https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver-linux-aarch64
+curl -LO https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver-linux-aarch64
 chmod +x qbixserver-linux-aarch64 && ./qbixserver-linux-aarch64
 
 # Windows x64
-curl -LO https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver-windows-x64.exe
+curl -LO https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver-windows-x64.exe
 qbixserver-windows-x64.exe
 ```
 
-[**All downloads &rarr;**](https://github.com/se7enxweb/qbix-webserver/releases/latest)
+[**All downloads &rarr;**](https://github.com/se7enxweb/exponential-velocity/releases/latest)
 
 ### Or run the phar, anywhere PHP runs
 
@@ -125,7 +125,7 @@ same server and needs nothing but a PHP 8.1 or later interpreter, which is why
 it runs on far more than the handful of platforms we can build binaries for.
 
 ```bash
-curl -LO https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver.phar
+curl -LO https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver.phar
 php qbixserver.phar --root=./web
 ```
 
@@ -216,14 +216,14 @@ it is.
 
 | Platform | Download | State |
 |---|---|---|
-| **Linux** x86_64 | [`qbixserver-linux-x86_64`](https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver-linux-x86_64) | shipped |
-| **Linux** aarch64 &middot; Raspberry Pi 4 / 5 | [`qbixserver-linux-aarch64`](https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver-linux-aarch64) | shipped |
-| **macOS** arm64 &middot; Apple Silicon | [`qbixserver-macos-arm64`](https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver-macos-arm64) | shipped |
+| **Linux** x86_64 | [`qbixserver-linux-x86_64`](https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver-linux-x86_64) | shipped |
+| **Linux** aarch64 &middot; Raspberry Pi 4 / 5 | [`qbixserver-linux-aarch64`](https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver-linux-aarch64) | shipped |
+| **macOS** arm64 &middot; Apple Silicon | [`qbixserver-macos-arm64`](https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver-macos-arm64) | shipped |
 | **Windows** x64 | — | does not build yet |
 
 ### The phar — anywhere PHP 8.1+ runs
 
-[`qbixserver.phar`](https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver.phar)
+[`qbixserver.phar`](https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver.phar)
 
 ```bash
 php qbixserver.phar --root=./web

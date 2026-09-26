@@ -106,7 +106,7 @@ $spec = array(
 	'priority' => 'optional',
 	'maintainer' => 'se7enxweb <info@se7enx.com>',
 	'vendor' => 'se7enxweb',
-	'homepage' => 'https://github.com/se7enxweb/qbix-webserver',
+	'homepage' => 'https://github.com/se7enxweb/exponential-velocity',
 	'license' => 'MIT',
 	'description' => "A PHP application server: persistent and forking workers, HTTP/1.1, HTTP/2, TLS\n"
 		. "and WebSockets, run by the distribution's own PHP. Its extensions are the\n"

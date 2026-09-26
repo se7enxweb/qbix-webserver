@@ -72,8 +72,8 @@ The names earlier releases used -- `qbixserver-linux-x86_64`,
 keep working.
 
 ```bash
-curl -LO https://github.com/se7enxweb/qbix-webserver/releases/latest/download/qbixserver-linux-x86_64-php8.3-standard
-curl -LO https://github.com/se7enxweb/qbix-webserver/releases/latest/download/SHA256SUMS
+curl -LO https://github.com/se7enxweb/exponential-velocity/releases/latest/download/qbixserver-linux-x86_64-php8.3-standard
+curl -LO https://github.com/se7enxweb/exponential-velocity/releases/latest/download/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 

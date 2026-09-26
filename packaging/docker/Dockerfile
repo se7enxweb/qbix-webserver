@@ -7,7 +7,7 @@
 #
 # VARIANT is mini, lite, standard or full (docs/binaries.md); WITH_ADDONS=1
 # adds the Oracle and Firebird drivers and ODBC drivers to standard and full
-# (docs/docker.md). Published as ghcr.io/se7enxweb/qbix-webserver.
+# (docs/docker.md). Published as ghcr.io/se7enxweb/exponential-velocity.
 ARG PHP_VERSION=8.3
 FROM php:${PHP_VERSION}-cli-bookworm
 

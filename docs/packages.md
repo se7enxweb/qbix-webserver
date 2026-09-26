@@ -36,7 +36,7 @@ files, in `SHA256SUMS`.
 Debian and Ubuntu -- `apt` resolves the PHP packages it depends on:
 
 ```bash
-curl -LO https://github.com/se7enxweb/qbix-webserver/releases/download/v<release>/qbix-webserver_<release>-1+deb12_all.deb
+curl -LO https://github.com/se7enxweb/exponential-velocity/releases/download/v<release>/qbix-webserver_<release>-1+deb12_all.deb
 sudo apt install ./qbix-webserver_<release>-1+deb12_all.deb
 ```
 

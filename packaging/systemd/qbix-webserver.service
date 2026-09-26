@@ -1,6 +1,6 @@
 [Unit]
 Description=Qbix web server
-Documentation=https://github.com/se7enxweb/qbix-webserver/tree/maintain/docs
+Documentation=https://github.com/se7enxweb/exponential-velocity/tree/maintain/docs
 After=network-online.target
 Wants=network-online.target
 

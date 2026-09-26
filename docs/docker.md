@@ -20,9 +20,9 @@ answers a health check.
 ### Tags
 
 ```
-ghcr.io/se7enxweb/qbix-webserver:<release>-php<version>-<variant>   fixed
-ghcr.io/se7enxweb/qbix-webserver:php<version>-<variant>             moves with each release
-ghcr.io/se7enxweb/qbix-webserver:latest                             newest PHP, standard variant
+ghcr.io/se7enxweb/exponential-velocity:<release>-php<version>-<variant>   fixed
+ghcr.io/se7enxweb/exponential-velocity:php<version>-<variant>             moves with each release
+ghcr.io/se7enxweb/exponential-velocity:latest                             newest PHP, standard variant
 ```
 
 `<version>` is 8.2, 8.3, 8.4 or 8.5; `<variant>` is `mini`, `lite`, `standard` or
@@ -37,7 +37,7 @@ Pin a fixed tag in production, so an image only changes when you change the tag.
 ```bash
 docker run -d --name web -p 8080:8080 \
   -v "$PWD/public:/app" \
-  ghcr.io/se7enxweb/qbix-webserver:php8.3-standard
+  ghcr.io/se7enxweb/exponential-velocity:php8.3-standard
 ```
 
 The document root is `/app`; the image ships the welcome page there, which a
@@ -46,7 +46,7 @@ server option can be passed by replacing the command:
 
 ```bash
 docker run -d -p 8080:8080 -v "$PWD:/srv/site" \
-  ghcr.io/se7enxweb/qbix-webserver:php8.3-standard \
+  ghcr.io/se7enxweb/exponential-velocity:php8.3-standard \
   qbixserver --root=/srv/site/public --port=8080 --workers=16
 ```
 
@@ -72,7 +72,7 @@ one. Two things follow from that:
   left out:
 
 ```bash
-docker run --rm ghcr.io/se7enxweb/qbix-webserver:php8.3-full \
+docker run --rm ghcr.io/se7enxweb/exponential-velocity:php8.3-full \
   cat /usr/share/qbix-webserver/image-extensions.txt
 ```
 
@@ -139,7 +139,7 @@ If you run the server on another port, set `QBIX_HEALTH_URL`
 ```yaml
 services:
   web:
-    image: ghcr.io/se7enxweb/qbix-webserver:php8.3-standard
+    image: ghcr.io/se7enxweb/exponential-velocity:php8.3-standard
     ports:
       - "8080:8080"
     volumes:

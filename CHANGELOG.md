@@ -685,7 +685,7 @@ registrations left -- bounded in any case by the worker memory ceiling below.
 
 ## v0.0.4.19 and earlier
 
-See the [release history](https://github.com/se7enxweb/qbix-webserver/releases)
+See the [release history](https://github.com/se7enxweb/exponential-velocity/releases)
 and `git log`. Entries before this file existed were not written up.
 
 **`v0.0.4.21`, `v0.0.4.22` and `v0.0.4.26` are tags with no release.** Their

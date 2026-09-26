@@ -1,10 +1,13 @@
 {
-    "name": "se7enxweb/qbix-webserver",
+    "name": "se7enxweb/exponential-velocity",
     "description": "Pure-PHP Web Server. No NGinX or PHP-FPM needed. Handle 10x more traffic instead!",
     "type": "project",
     "license": "MIT",
     "keywords": ["server", "http", "webserver", "php", "static", "websocket"],
     "homepage": "https://github.com/Qbix/Server",
+    "replace": {
+        "se7enxweb/qbix-webserver": "self.version"
+    },
     "require": {
         "php": ">=8.1",
         "ext-sockets": "*"

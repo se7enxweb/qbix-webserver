@@ -4,7 +4,7 @@
  * Qbix app installation info reporter for the Q panel.
  *
  * Run from a Qbix app root, or from anywhere when this script is installed
- * under vendor/se7enxweb/qbix-webserver/bin (it walks up to the Composer
+ * under vendor/se7enxweb/exponential-velocity/bin (or the older vendor/se7enxweb/qbix-webserver/bin) (it walks up to the Composer
  * project root).
  *
  * Prints the Qbix app name and a readable list of config, plugins, composer
