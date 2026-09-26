@@ -1200,6 +1200,14 @@ if (!empty($opts['test'])) {
 // ── PID file ────────────────────────────────────────
 
 if ($opts['pid']) {
+	// A pid file naming another server that is still running: say so. This
+	// start takes the file over, and removes it again on the way out only
+	// while it still names this process.
+	$__prev = is_file($opts['pid']) ? (int) trim((string) @file_get_contents($opts['pid'])) : 0;
+	if ($__prev > 0 and $__prev !== getmypid() and function_exists('posix_kill') and @posix_kill($__prev, 0)) {
+		fwrite(STDERR, "  [PID] {$opts['pid']} names a server that is still running (pid $__prev); this one takes the file over\n");
+	}
+	unset($__prev);
 	file_put_contents($opts['pid'], getmypid());
 	$pidOwner = getmypid();
 	register_shutdown_function(function () use ($opts, $pidOwner) {
@@ -1212,11 +1220,28 @@ if ($opts['pid']) {
 		if (getmypid() !== $pidOwner) {
 			return;
 		}
-		@unlink($opts['pid']);
-		// Kill the watchdog if it's running
+		// Only while it still names this process: another server given the
+		// same file since -- a second instance, a restart that came up first
+		// -- owns it now, and removing it would leave that one unfindable.
+		if ((int) trim((string) @file_get_contents($opts['pid'])) === $pidOwner) {
+			@unlink($opts['pid']);
+		}
+		// Kill the watchdog if it's running -- ours: the one this server
+		// forked (its child) or the one that restarted it (its parent).
+		// Another server stopping must not take away the supervisor of the
+		// one that wrote the watchdog's file.
 		$watchdogPid = 'local/watchdog.pid';
 		if (is_file($watchdogPid)) {
 			$wPid = (int) trim(file_get_contents($watchdogPid));
+			if ($wPid > 0 and function_exists('posix_getppid') and $wPid !== posix_getppid()
+				and is_readable("/proc/$wPid/stat")) {
+				// Linux tells a process's parent; elsewhere it cannot be told
+				// and the old behaviour stands.
+				$st = (string) @file_get_contents("/proc/$wPid/stat");
+				$rest = substr($st, (int) strrpos($st, ')') + 2);
+				$fields = explode(' ', $rest);
+				if ((int) ($fields[1] ?? 0) !== $pidOwner) $wPid = 0;
+			}
 			if ($wPid > 0) {
 				if (function_exists('posix_kill')) {
 					posix_kill($wPid, 15); // SIGTERM
