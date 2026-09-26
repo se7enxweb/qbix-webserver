@@ -4,6 +4,47 @@
 
 A pure PHP web server. No nginx, no Apache, no php-fpm. One process serves static files, PHP scripts, WebSocket connections, and a live dashboard.
 
+## How is Exponential Velocity different from Qbix?
+
+Exponential Velocity is a production-focused distribution built on the Qbix web
+server. It keeps everything Qbix does — the copy-on-write worker model,
+WebSockets, and the live dashboard — and your PHP still runs unmodified. On top
+of that, it adds the packaging, control plane, and site-operations tooling you
+need to actually run it in production:
+
+- **Install it however you like.** Static binaries for Linux (x86-64, ARM64),
+  macOS (Apple Silicon) and Windows, `.deb` and `.rpm` packages that upgrade in
+  place, Docker images, or a single `.phar` — built and tested across PHP
+  8.2–8.5 in four sizes (mini, lite, standard, full).
+- **A control panel built for the public internet.** Credentialed access to the
+  dashboard, logs, metrics and app inspector, a root-owned credential store,
+  forced change of the default password, login lockout, and — for a browser —
+  a clean redirect to sign in and back to the page you wanted.
+- **Manage your whole site from the panel.** Domains, aliases, subdomains and
+  document roots; HTTP→HTTPS, `www`/bare and custom redirects; HSTS and custom
+  error pages — no config files to hand-edit.
+- **HTTPS that manages itself.** Built-in Let's Encrypt (ACME) issuance and
+  renewal, per-domain certificates chosen by SNI, and an SSL panel that shows
+  what covers each domain and when it expires.
+- **A built-in admin shell.** A drop-down console on every panel view runs the
+  server's own commands, with a searchable history of over 100,000 entries.
+- **Serve only what you list.** An allowlist of entry scripts and static paths
+  means only the files you name are served or executed; everything else goes to
+  your front controller.
+- **Fast, accessible admin views.** Gzip/Brotli-compressed panel pages, a shared
+  stylesheet, and a 100/100 Lighthouse accessibility score.
+- **Operate it like Apache.** A Debian-style `/etc/vc` layout
+  (`sites-available`/`sites-enabled`, `conf`/`mods`), `a2ensite`-style
+  enable/disable, and `apache2ctl`-style start/stop/reload/status.
+- **Built to stay up.** A worker pool that sizes itself to available RAM, a
+  design where a worker dying never fails a request, correct TLS shutdown from
+  forked workers, and safe operation under opcache.
+- **Optional peer-to-peer mesh and mobile transports** (experimental, off by
+  default) for BLE/Wi-Fi device meshes.
+- **Proven across platforms.** A CI matrix boots the server on Linux, the BSDs,
+  Alpine/musl, illumos and more, and every release ships tested binaries and
+  packages.
+
 ### The problem with php-fpm
 
 Whether opcache is enabled or not, the vast majority of production PHP code is I/O-bound. Workers wait for the database, the filesystem, an API call, a cache server. During that wait, the worker is doing nothing — but it's still holding 30–60MB of RAM. That's the bottleneck. On a 4GB server, php-fpm gets maybe 80 workers. Each one blocks on a 200ms query, so you get ~400 req/s. That's the ceiling.
