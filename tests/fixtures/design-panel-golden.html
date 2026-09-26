@@ -689,9 +689,12 @@ async function doAuth(isSetup) {
   if (data.token) {
     if (data.mustChange) { setToken(data.token); showChangePassword(data.rules); return; }
     setToken(data.token);
-    // If we were redirected here from another page, go back
-    var next = new URLSearchParams(window.location.search).get('next');
-    if (next) { window.location.href = next; return; }
+    // If we were redirected here from a protected page, go back to it. The
+    // page travels as the `next` view parameter (/Q/panel/(next)/<enc>),
+    // base64url-encoded. Only a same-origin relative path is honoured, so a
+    // crafted value cannot bounce a freshly-signed-in visitor off-site.
+    var dest = safeNextDestination();
+    if (dest) { window.location.href = dest; return; }
     setAuthState('panel');
     document.getElementById('auth-screen').remove();
     document.querySelector('.tabs').style.display = '';
@@ -864,6 +867,27 @@ function parseViewParamsFromUrl(path) {
     }
   }
   return params;
+}
+function base64urlDecode(str) {
+  try {
+    var b = String(str).replace(/-/g, '+').replace(/_/g, '/');
+    while (b.length % 4) b += '=';
+    return atob(b);
+  } catch (e) { return ''; }
+}
+// The page to return to after signing in, read from the `next` view parameter,
+// base64url-decoded, and only if it is a same-origin relative path: it must
+// start with a single "/" and not "//" or "/\\", carry no scheme and no
+// control characters. Anything else is ignored (open-redirect guard).
+function safeNextDestination() {
+  var params = parseViewParamsFromUrl(location.pathname);
+  var enc = params.next;
+  if (!enc) return null;
+  var p = base64urlDecode(enc);
+  if (!p || p.charAt(0) !== '/') return null;
+  if (p.charAt(1) === '/' || p.charAt(1) === '\\') return null;
+  if (/[\x00-\x1f\\]/.test(p)) return null;
+  return p;
 }
 function buildViewParamUrl(params) {
   var parts = [];

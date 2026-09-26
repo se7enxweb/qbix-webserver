@@ -2307,7 +2307,7 @@ class Q_WebServer
 				'headers'=>array('Content-Type'=>'application/json'));
 		}
 		if (($path === '/Q/metrics' || $path === '/Q/attestation') and !self::adminAllowed($parsed)) {
-			return self::adminForbidden();
+			return self::adminRefusal($parsed);
 		}
 		if ($path === '/Q/metrics') {
 			return self::metricsResponse($parsed);
@@ -2413,7 +2413,7 @@ class Q_WebServer
 
 		if ($path === '/Q/phpinfo') {
 			// The process environment is in it: never remote without a credential.
-			if (!self::adminAllowed($parsed, true)) return self::adminForbidden();
+			if (!self::adminAllowed($parsed, true)) return self::adminRefusal($parsed);
 			ob_start();
 			phpinfo();
 			$html = Q_WebServer_Shell::decorate(Q_WebServer_PhpInfo::page(ob_get_clean()));
@@ -2425,7 +2425,7 @@ class Q_WebServer
 			if (Q_Config::get('Q', 'dashboard', null) === false) {
 				return array('status' => 404, 'body' => 'Not found');
 			}
-			if (!self::adminAllowed($parsed)) return self::adminForbidden();
+			if (!self::adminAllowed($parsed)) return self::adminRefusal($parsed);
 			// Static dashboard token (from config)
 			$token = Q_Config::get('Q', 'dashboard', 'token', null);
 			if ($token !== null) {
@@ -2444,8 +2444,7 @@ class Q_WebServer
 				// session in the cookie, a header or ?token=, or the dashboard token.
 				if (!self::hasAdminCredential($parsed)) {
 					// Redirect to panel (which has the login form)
-					return array('status' => 302, 'body' => '',
-						'headers' => array('Location' => '/Q/panel'));
+					return self::adminLoginRedirect($parsed);
 				}
 			}
 			return array('status'=>200, 'body'=>Q_WebServer_Dashboard::renderHtml($parsed),
@@ -3026,8 +3025,9 @@ class Q_WebServer
 			if ($path === '/Q/phpinfo') {
 				// The process environment is in it: never remote without a credential.
 				if (!self::adminAllowed($parsed, true)) {
-					$f = self::adminForbidden();
-					self::sendResponse($client, $f['status'], $f['body'], $f['headers']['Content-Type']);
+					$f = self::adminRefusal($parsed);
+					$h = $f['headers']; $ct = $h['Content-Type']; unset($h['Content-Type']);
+					self::sendResponse($client, $f['status'], $f['body'], $ct, $h);
 					return false;
 				}
 				ob_start();
@@ -3039,8 +3039,9 @@ class Q_WebServer
 			// The rest of the admin surface, before anything answers it.
 			if (in_array(rtrim($path, '/'), array('/Q/dashboard', '/Q/stats', '/Q/metrics', '/Q/attestation'), true)
 				and !self::adminAllowed($parsed)) {
-				$f = self::adminForbidden();
-				self::sendResponse($client, $f['status'], $f['body'], $f['headers']['Content-Type']);
+				$f = self::adminRefusal($parsed);
+				$h = $f['headers']; $ct = $h['Content-Type']; unset($h['Content-Type']);
+				self::sendResponse($client, $f['status'], $f['body'], $ct, $h);
 				return false;
 			}
 			if ($path === '/Q/docs' || $path === '/Q/docs/') {
@@ -5816,6 +5817,84 @@ WORKER;
 			'body' => "Forbidden. This page is available from this machine, or with the dashboard token "
 				. "or a control panel session; to allow it remotely without one, set Q.dashboard.remote.",
 			'headers' => array('Content-Type' => 'text/plain; charset=utf-8'));
+	}
+
+	/**
+	 * Whether this request is a browser navigation that a refused admin view
+	 * should send to the login page instead of a plain 403: a GET or HEAD
+	 * whose Accept offers text/html, and not an API/XHR call. The SPA's own
+	 * JSON calls (X-Panel-Token or X-Requested-With, a Bearer token) and
+	 * scrapers keep the 403/JSON they can act on.
+	 */
+	static function wantsHtml($parsed)
+	{
+		$m = strtoupper((string) ($parsed['method'] ?? 'GET'));
+		if ($m !== 'GET' and $m !== 'HEAD') return false;
+		$h = (array) ($parsed['headers'] ?? array());
+		if (isset($h['x-panel-token']) or isset($h['x-requested-with'])) return false;
+		if (strncmp((string) ($h['authorization'] ?? ''), 'Bearer ', 7) === 0) return false;
+		return stripos((string) ($h['accept'] ?? ''), 'text/html') !== false;
+	}
+
+	/**
+	 * The original request as one same-origin path to return to after login:
+	 * the path, plus its query. Anything that is not a single-slash-rooted
+	 * relative path -- a scheme, a protocol-relative "//", a backslash, a
+	 * control character -- falls back to /Q/dashboard, so the value can never
+	 * become an open redirect.
+	 */
+	static function safeNextPath($parsed)
+	{
+		$path = (string) ($parsed['path'] ?? '');
+		$query = (string) ($parsed['query'] ?? '');
+		$full = $query !== '' ? $path . '?' . $query : $path;
+		if ($full === '' or $full[0] !== '/') return '/Q/dashboard';
+		if (isset($full[1]) and ($full[1] === '/' or $full[1] === '\\')) return '/Q/dashboard';
+		if (strpbrk($full, "\r\n\t\0") !== false) return '/Q/dashboard';
+		if (strpos($full, '\\') !== false) return '/Q/dashboard';
+		return $full;
+	}
+
+	/** base64url (RFC 4648, no padding): safe as one URL path segment. */
+	static function base64urlEncode($s)
+	{
+		return rtrim(strtr(base64_encode((string) $s), '+/', '-_'), '=');
+	}
+
+	/**
+	 * The control-panel login URL that returns to the requested page. The page
+	 * travels as the `next` view parameter (/Q/panel/(next)/<enc>), base64url
+	 * so its slashes and query survive as one segment -- the same addressable
+	 * view-parameter scheme the panel's tabs use.
+	 */
+	static function loginRedirectUrl($parsed)
+	{
+		return '/Q/panel/(next)/' . self::base64urlEncode(self::safeNextPath($parsed));
+	}
+
+	/** A 302 that sends a browser to the login page, and back afterwards. */
+	static function adminLoginRedirect($parsed)
+	{
+		$loc = self::loginRedirectUrl($parsed);
+		$body = '<!DOCTYPE html><meta charset="utf-8"><title>Sign in</title>'
+			. '<p>Redirecting to the control panel to sign in&hellip; '
+			. '<a href="' . htmlspecialchars($loc, ENT_QUOTES) . '">Continue</a>.</p>';
+		return array('status' => 302, 'body' => $body,
+			'headers' => array('Location' => $loc,
+				'Content-Type' => 'text/html; charset=utf-8', 'Cache-Control' => 'no-store'));
+	}
+
+	/**
+	 * The single answer every gated admin view gives when it refuses for want
+	 * of a credential: a browser navigation is redirected to the login page
+	 * (and returned here after signing in); an API/XHR call or a scraper gets
+	 * the plain 403 unchanged. Both transports call this, so the behaviour
+	 * cannot drift between views.
+	 */
+	static function adminRefusal($parsed)
+	{
+		if (self::wantsHtml($parsed)) return self::adminLoginRedirect($parsed);
+		return self::adminForbidden();
 	}
 
 	/** /Q/health for a caller that may not see the stats: alive, and nothing else. */

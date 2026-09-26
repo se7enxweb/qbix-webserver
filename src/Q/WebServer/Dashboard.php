@@ -293,8 +293,7 @@ class Q_WebServer_Dashboard
 			// This machine is let in, as adminAllowed() lets it in everywhere else.
 			if (Q_WebServer_Panel::hasPassword() && !Q_WebServer::isLocalRequest($parsed)) {
 				if (!Q_WebServer::hasAdminCredential($parsed)) {
-					Q_WebServer::sendRedirect($client,
-						'/Q/panel?next=' . urlencode('/Q/dashboard'));
+					Q_WebServer::sendRedirect($client, Q_WebServer::loginRedirectUrl($parsed));
 					return true;
 				}
 			}

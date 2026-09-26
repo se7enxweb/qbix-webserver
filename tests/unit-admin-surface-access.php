@@ -102,4 +102,42 @@ check('cluster secret: a wrong one is refused',
 check('cluster secret: the right one joins a new peer',
 	req($port, '/Q/cluster/join', true, array('Content-Type' => 'application/json', 'X-Q-Cluster-Secret' => $secret), 'POST', $body)['status'], 200);
 
+// ── A browser navigation is redirected to the login page (view parameter),
+//     while API/XHR calls and scrapers keep the plain 403 ──────────────────
+$b64u = function ($p) { return rtrim(strtr(base64_encode($p), '+/', '-_'), '='); };
+$port = rh_start('redir', array('Q' => array('webserver' => $proxy)), 1);
+$html = array('Accept' => 'text/html,application/xhtml+xml');
+foreach (array('/Q/dashboard', '/Q/stats', '/Q/phpinfo') as $p) {
+	$r = req($port, $p, true, $html);
+	$loc = $r['headers']['location'] ?? '';
+	check("browser $p is redirected to the login page", $r['status'], 302);
+	check("browser $p carries next as a view parameter", $loc, '/Q/panel/(next)/' . $b64u($p));
+}
+// The query is preserved in next.
+$r = req($port, '/Q/dashboard?tab=live', true, $html);
+check('browser: the query is preserved in next',
+	$r['headers']['location'] ?? '', '/Q/panel/(next)/' . $b64u('/Q/dashboard?tab=live'));
+// Metrics for a browser redirects too; for Prometheus it stays plain text.
+check('browser /Q/metrics is redirected', req($port, '/Q/metrics', true, $html)['status'], 302);
+check('Prometheus /Q/metrics still gets 403', req($port, '/Q/metrics', true,
+	array('Accept' => 'text/plain;version=0.0.4'))['status'], 403);
+// An XHR / SPA call (no text/html, or an XHR marker) is not redirected.
+check('an XHR (X-Requested-With) is not redirected',
+	req($port, '/Q/stats', true, array('Accept' => 'text/html', 'X-Requested-With' => 'XMLHttpRequest'))['status'], 403);
+check('a JSON fetch is not redirected',
+	req($port, '/Q/stats', true, array('Accept' => 'application/json'))['status'], 403);
+check('a request carrying X-Panel-Token is not redirected',
+	req($port, '/Q/stats', true, array('Accept' => 'text/html', 'X-Panel-Token' => 'whatever'))['status'], 403);
+// A local browser is served, never redirected.
+check('a local browser gets the dashboard, not a redirect',
+	req($port, '/Q/dashboard', false, $html)['status'], 200);
+// With a token configured, a browser that carries it is served (not redirected).
+$tok2 = 'tk-' . bin2hex(random_bytes(8));
+$port = rh_start('redir-token', array('Q' => array('webserver' => $proxy,
+	'dashboard' => array('token' => $tok2, 'remote' => true))), 1);
+check('browser with the right token is served',
+	req($port, "/Q/dashboard?token=$tok2", true, $html)['status'], 200);
+check('browser without it is redirected to log in',
+	req($port, '/Q/dashboard', true, $html)['status'], 302);
+
 rh_finish();
