@@ -760,11 +760,31 @@ class Q_WebServer_Pool
 		$family = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
 		$pair = @stream_socket_pair($family, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 		if (!$pair) return $this->zygoteFailed('socketpair failed');
+		// The server takes signals all the time -- SIGCHLD whenever a worker
+		// it forked itself exits, every signal the event loop watches -- and
+		// any of them interrupts a blocking send or read here. Taken for a
+		// failure, one interruption stopped a zygote that was working
+		// perfectly: on alpha the first burst after every start. So an
+		// interrupted call is retried, within one deadline for the lot.
+		$ctl = $this->zygote['ctl'];
+		$deadline = microtime(true) + 5.0;
+		$interrupted = function () use ($ctl) {
+			$e = socket_last_error($ctl) ?: socket_last_error();
+			if ($e !== SOCKET_EINTR) return false;
+			socket_clear_error($ctl);
+			socket_clear_error();
+			return true;
+		};
 		$theirs = @socket_import_stream($pair[1]);
-		$sent = $theirs !== false && @socket_sendmsg($this->zygote['ctl'], array(
-			'iov' => array('F'),
-			'control' => array(array('level' => SOL_SOCKET, 'type' => SCM_RIGHTS, 'data' => array($theirs))),
-		), 0);
+		$sent = false;
+		if ($theirs !== false) {
+			do {
+				$sent = @socket_sendmsg($ctl, array(
+					'iov' => array('F'),
+					'control' => array(array('level' => SOL_SOCKET, 'type' => SCM_RIGHTS, 'data' => array($theirs))),
+				), 0);
+			} while ($sent === false and $interrupted() and microtime(true) < $deadline);
+		}
 		// An imported socket leaves its descriptor to the stream, which is
 		// closed here: the zygote holds its own copy now.
 		unset($theirs);
@@ -774,9 +794,13 @@ class Q_WebServer_Pool
 			return $this->zygoteFailed('could not hand a socket to the zygote');
 		}
 		$reply = '';
-		while (strlen($reply) < 4) {
-			$chunk = @socket_read($this->zygote['ctl'], 4 - strlen($reply));
-			if ($chunk === false or $chunk === '') break;
+		while (strlen($reply) < 4 and microtime(true) < $deadline) {
+			$chunk = @socket_read($ctl, 4 - strlen($reply));
+			if ($chunk === false) {
+				if ($interrupted()) continue;
+				break;
+			}
+			if ($chunk === '') break;   // the zygote is gone
 			$reply .= $chunk;
 		}
 		$pid = strlen($reply) === 4 ? (int) unpack('N', $reply)[1] : 0;

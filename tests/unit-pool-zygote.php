@@ -99,6 +99,12 @@ function tlsBurst($port, $n, $sleepMs)
 	return $ok;
 }
 
+/** SIGKILL one process -- never 0 (this process group) or below. */
+function killOne($p)
+{
+	if ((int) $p > 1) @posix_kill((int) $p, SIGKILL);
+}
+
 /** Descendants of $pid (children and grandchildren), pid => parent. */
 function tree($pid)
 {
@@ -166,10 +172,30 @@ $works = 0;
 foreach ($GLOBALS['held_zygote'] as $s) if (tlsGet($s, '/index.php') === 200) ++$works;
 check('the connections held open through the forks still work', $works, count($GLOBALS['held_zygote']));
 
+// ── Signals at the server during hand-offs cost nothing ──────────────────
+// A busy server takes SIGCHLD constantly (every worker it forked itself that
+// exits), and each one interrupts whatever call it is blocked in. The
+// hand-off to the zygote took an interrupted read for a dead zygote and
+// stopped it: on alpha the first burst after every start. Recreated here by
+// a process that showers the server with SIGCHLD while the pool forks.
+$shower = pcntl_fork();
+if ($shower === 0) {
+	$until = microtime(true) + 6.0;
+	while ($pid > 1 and microtime(true) < $until) { @posix_kill($pid, SIGCHLD); usleep(200); }
+	posix_kill(getmypid(), SIGKILL);   // no shutdown functions: they would stop the servers
+}
+$before = count(rh_children($zygotePid));
+$okShower = tlsBurst($tlsPort, 12, 600) + tlsBurst($tlsPort, 12, 600);
+pcntl_waitpid($shower, $st);
+check('requests are answered while signals rain on the server', $okShower, 24);
+rh_bug('the zygote survives hand-offs interrupted by signals', file_exists("/proc/$zygotePid")
+	and strpos(rh_log('zygote'), 'zygote:') === false,
+	'an interrupted read of the zygote\'s reply was taken for a dead zygote, which the server then stopped');
+
 // ── A worker dies: reaped at once, and the zygote carries on ─────────────
 $zw = array_keys(rh_children($zygotePid));
 $victim = $zw[0] ?? 0;
-@posix_kill($victim, SIGKILL);
+killOne($victim);
 usleep(500000);
 $states = rh_children($zygotePid);
 check('a killed worker is reaped by the zygote at once (no zombie)', isset($states[$victim]), false);
@@ -178,11 +204,12 @@ check('requests are still answered after a worker died', tlsBurst($tlsPort, 6, 4
 check('the zygote forked the replacement', count(rh_children($zygotePid)) > 0, true);
 
 // ── The zygote dies: nothing but itself is lost ──────────────────────────
-@posix_kill($zygotePid, SIGKILL);
-usleep(500000);
-foreach (array_keys(rh_children($zygotePid)) as $w) @posix_kill($w, SIGKILL);   // likely re-parented already
-foreach (tree($pid) as $p => $parent) if ($parent !== $pid) @posix_kill($p, SIGKILL);
-usleep(500000);
+// Its workers too, so the pool has to fork: listed first, since once the
+// zygote is gone they belong to init and no longer show under it.
+$orphans = array_keys(rh_children($zygotePid));
+killOne($zygotePid);
+foreach ($orphans as $w) killOne($w);
+usleep(800000);
 check('requests are still answered after the zygote died', tlsBurst($tlsPort, 8, 400), 8);
 check('...and the server says it now forks workers itself',
 	strpos(rh_log('zygote'), 'zygote:') !== false, true);
