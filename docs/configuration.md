@@ -274,6 +274,28 @@ and does not read `.htaccess`, so a rewrite to a script other than
 whose script exists inside the root, wins. Both keys apply to HTTP/1.1 and
 HTTP/2, in either worker mode.
 
+A few things to know when setting them:
+
+- **Anchor every pattern.** A pattern is matched anywhere in the path unless
+  it says otherwise, so `/images/` also matches
+  `/var/storage/original/images/secret.pdf`. Start each one with `^/`.
+- **Names are compared exactly.** `/Index.php` is not `/index.php`, and a
+  script whose extension is written in capitals is still a script: it runs
+  only when listed as written. On a filesystem that ignores case, list the
+  spelling your URLs use.
+- **The lists hold for the whole server.** Every domain served from it,
+  with its own document root or not, is judged by the same lists, relative
+  to that domain's root.
+- **Changing them drops stored pages.** The reverse cache is looked up before
+  these checks, so a page stored while a script could still run would
+  otherwise be answered after it no longer may. When the lists differ from
+  those the stored entries were made under, the server starts a new cache
+  generation at start-up, and every earlier entry is a miss from then on.
+- **Server paths are not affected.** `/Q/`, the ACME challenge under
+  `/.well-known/acme-challenge/` and a directory listing you have switched on
+  for a path answer as before. Any other file under `/.well-known/` is a file
+  like the rest, so list `^/\.well-known/` if you serve one.
+
 ### CGI carveout mode — legacy PHP compatibility
 
 Scripts matching `Q.webserver.cgi.patterns` run via `php-cgi` subprocess instead of fork. Native `header()`, `setcookie()`, `session_start()` all work — full compatibility with WordPress, Laravel, or any PHP code that calls `header()` directly.
