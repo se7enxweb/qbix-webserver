@@ -72,9 +72,12 @@ Check at any time with `qbixconsole ssl:show`.
    have expired, and the key must belong to it. A pair that fails is never put in
    front of a visitor.
 3. **The listener reads a private copy.** The checked pair is copied to
-   `<ssl dir>/active-<port>-<fingerprint>.pem/.key`, and HTTPS reads only that copy.
-   A file being rewritten elsewhere (a renewal half done) can therefore never break
-   a handshake.
+   `<ssl dir>/active-<port>-<fingerprint>-<pid>.pem/.key`, and HTTPS reads only that
+   copy. A file being rewritten elsewhere (a renewal half done) can therefore never
+   break a handshake. The copy belongs to that one server process: another server on
+   the same directory and port (a second site, a test instance) writes its own and
+   never removes this one. A server removes only its own earlier copies and those
+   of processes that are no longer running.
 4. **HTTPS comes up before HTTP**, so there is never a moment when the server
    answers plain HTTP but not HTTPS.
 5. **Everything is watched.** Every `watchInterval` seconds (60) the server looks
@@ -107,7 +110,7 @@ ssl/
   self-signed.pem            the self-signed certificate (0644)
   self-signed.key            its key (0600)
   self-signed.pem.prev       the pair it last replaced
-  active-443-<fp>.pem/.key   the copy HTTPS reads (do not edit)
+  active-443-<fp>-<pid>.pem/.key  the copy one server's HTTPS reads (do not edit)
   imported/                  pairs imported from DER, archives, bundles, remote
     files.pem / files.key
     archive.pem / archive.key

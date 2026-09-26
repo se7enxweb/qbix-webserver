@@ -359,19 +359,27 @@ class Q_WebServer_Certs
 		// the next in a single step, never through a moment where it would
 		// read a new key with the old certificate.
 		$tag = substr(preg_replace('/[^0-9a-f]/', '', strtolower($c->fingerprint())), 0, 16) ?: 'x';
+		// And by process: another server on the same directory and port -- a
+		// second site, a test instance, a benchmark -- has copies of its own,
+		// which this one must never replace or remove. PHP reads the files
+		// again for every handshake, so a removed copy fails every new
+		// connection of the server that was using it.
+		$pid = self::pid();
 		foreach (array(Q_WebServer_Certificate_Store::defaultDir(), self::certsDir()) as $dir) {
 			if (!is_dir($dir)) @mkdir($dir, 0755, true);
-			$cert = $dir . DS . "active-$port-$tag.pem";
-			$key = $dir . DS . "active-$port-$tag.key";
+			$cert = $dir . DS . "active-$port-$tag-$pid.pem";
+			$key = $dir . DS . "active-$port-$tag-$pid.key";
 			if (Q_WebServer_Certificate_Store::writeAtomic($key, $c->keyPem, 0600)
 				and Q_WebServer_Certificate_Store::writeAtomic($cert, $c->certPem, 0644)) {
 				self::$activeCert = $cert;
 				self::$activeKey = $key;
-				// Earlier copies, this run's or a previous one's. The caller
-				// points the listener at the new pair before anything else
-				// runs, so no handshake can reach a removed file.
+				// This process's earlier copies, and those of processes that
+				// are gone. The caller points the listener at the new pair
+				// before anything else runs, so no handshake of ours can reach
+				// a removed file, and no running server's copies are touched.
 				foreach ((array) glob($dir . DS . "active-$port-*") as $old) {
-					if ($old !== $cert and $old !== $key) @unlink($old);
+					if ($old === $cert or $old === $key) continue;
+					if (self::copyRemovable($old, $pid)) @unlink($old);
 				}
 				return true;
 			}
@@ -379,6 +387,45 @@ class Q_WebServer_Certs
 		Q_WebServer_Certificate_Events::emit('error', array('reason' => 'could not write the active certificate copy'));
 		return false;
 	}
+	/** This process's id; getmypid() can be the parent's after a fork. */
+	static function pid()
+	{
+		return function_exists('posix_getpid') ? posix_getpid() : getmypid();
+	}
+
+	/**
+	 * Whether an active copy may be removed by the process $pid: its own, or
+	 * one whose process is no longer running. A copy named without a process
+	 * id (made by an earlier version) is left alone: its server may still be
+	 * running. Where liveness cannot be checked (Windows), only its own.
+	 * @method copyRemovable
+	 * @static
+	 * @param {string} $file
+	 * @param {int} $pid
+	 * @return {boolean}
+	 */
+	static function copyRemovable($file, $pid)
+	{
+		if (!preg_match('/^active-\d+-[0-9a-fx]+-(\d+)\.(pem|key)$/', basename($file), $m)) return false;
+		$owner = (int) $m[1];
+		if ($owner === (int) $pid) return true;
+		return self::processGone($owner);
+	}
+
+	/** Whether no process with this id is running; false when it cannot be told. */
+	static function processGone($pid)
+	{
+		$pid = (int) $pid;
+		if ($pid <= 0) return false;
+		if (function_exists('posix_kill')) {
+			if (@posix_kill($pid, 0)) return false;
+			// EPERM: it exists, it is only someone else's.
+			return function_exists('posix_get_last_error') ? posix_get_last_error() !== 1 : false;
+		}
+		if (DS === '/' and is_dir('/proc/self')) return !is_dir('/proc/' . $pid);
+		return false;
+	}
+
 	/** Whether a certificate and key file are usable together. */
 	static function pairUsable($certFile, $keyFile)
 	{
