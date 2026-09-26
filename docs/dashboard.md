@@ -391,6 +391,8 @@ The same rule on HTTP/1.1 and HTTP/2, for `/Q/panel` and everything under `/Q/ap
 
 Anything else gets the server's own 403 page, which says how to set a password.
 
+The short version, for a first sign-in: [panel.md](panel.md).
+
 Until a password is chosen, the **default key `panel`** signs in -- from anywhere,
 so a server can be set up from outside -- and the session it gives can only change
 it: the page shows nothing but a change form until a password that passes the rules
