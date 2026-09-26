@@ -220,6 +220,94 @@ class Q_WebServer_Pool
 	protected $maxRequests = 1000;
 
 	/**
+	 * The zygote: a process forked once the pool has started, before the
+	 * server has accepted any connection, that forks every later worker.
+	 * array('pid' => int, 'ctl' => Socket) while it serves; null otherwise.
+	 *
+	 * A worker forked from the server itself inherits every client
+	 * connection open at that moment. Plain ones are closed at once; a TLS
+	 * stream cannot be (closing it writes close_notify onto the server's own
+	 * live connection), so the worker parks it until it exits. Under load
+	 * the dynamic pool forks as workers become busy, and each new worker
+	 * kept every open connection alive: on alpha a 20-second burst of 355
+	 * rendered pages left up to 50 connections in CLOSE-WAIT, held by
+	 * workers only, until those workers were retired. Forked from the
+	 * zygote, which never held a client connection, a worker inherits none.
+	 *
+	 * Q.webserver.zygote turns it on (off by default); without ext-sockets'
+	 * SCM_RIGHTS, or if the zygote fails, workers are forked from the server
+	 * as before.
+	 *
+	 * @property $zygote
+	 * @type {array|null}
+	 */
+	protected $zygote = null;
+
+	/**
+	 * Whether this pool may fork its workers from a zygote.
+	 * @method zygoteSupported
+	 * @static
+	 * @return {boolean}
+	 */
+	static function zygoteSupported()
+	{
+		return function_exists('socket_create_pair') and function_exists('socket_sendmsg')
+			and function_exists('socket_recvmsg') and function_exists('socket_import_stream')
+			and function_exists('socket_export_stream') and function_exists('socket_cmsg_space')
+			and function_exists('pcntl_fork') and function_exists('posix_kill')
+			and defined('SCM_RIGHTS') and defined('AF_UNIX');
+	}
+
+	/**
+	 * Whether a process is running: signal 0 reaches it and it is not a
+	 * zombie. For a worker the zygote forked, which is not this process's
+	 * child, so waitpid() cannot answer (see hasExited()).
+	 * @method processAlive
+	 * @static
+	 * @param {integer} $pid
+	 * @return {boolean}
+	 */
+	static function processAlive($pid)
+	{
+		if ($pid <= 0 or !function_exists('posix_kill')) return false;
+		if (!@posix_kill($pid, 0)) return false;
+		// A zombie still answers signal 0. The zygote reaps its children as
+		// they exit, but not in the same instant.
+		$stat = @file_get_contents('/proc/' . $pid . '/stat');
+		if (is_string($stat) and ($p = strrpos($stat, ')')) !== false) {
+			$state = substr($stat, $p + 2, 1);
+			if ($state === 'Z' or $state === 'X') return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Whether a worker is gone, asked the way that works for it: waitpid()
+	 * for this process's own children, processAlive() for the zygote's.
+	 * @method workerGone
+	 * @param {array} $w a worker entry
+	 * @return {boolean}
+	 */
+	protected function workerGone($w)
+	{
+		$pid = (int) ($w['pid'] ?? 0);
+		if ($pid <= 0) return true;
+		return empty($w['zygote']) ? self::hasExited($pid) : !self::processAlive($pid);
+	}
+
+	/**
+	 * Reap a worker told to exit -- unless the zygote forked it, in which
+	 * case it is the zygote's to reap.
+	 * @method reapWorker
+	 * @param {array} $w a worker entry
+	 */
+	protected function reapWorker($w)
+	{
+		if (!empty($w['zygote'])) return;
+		$this->reap((int) ($w['pid'] ?? 0));
+	}
+
+	/**
 	 * @method __construct
 	 * @param {integer} [$size=4]
 	 */
@@ -361,6 +449,11 @@ class Q_WebServer_Pool
 		for ($i = 0; $i < $initial; $i++) {
 			$this->forkWorker();
 		}
+		// Still before the first connection is accepted: the zygote forked
+		// now holds no client, and neither will any worker it forks.
+		if (Q_Config::get('Q', 'webserver', 'zygote', false) and self::zygoteSupported()) {
+			$this->startZygote();
+		}
 		$pool = $this;
 		Q_Evented::repeat(2.0, function () use ($pool) {
 			$pool->reapPending();
@@ -414,7 +507,7 @@ class Q_WebServer_Pool
 			// Closing its socket ends the worker: its blocking read returns
 			// and childRun() leaves the loop.
 			if (is_resource($sock)) @fclose($sock);
-			$this->reap((int) $this->workers[$index]['pid']);
+			$this->reapWorker($this->workers[$index]);
 		}
 		$this->forgetWorker($index);
 	}
@@ -427,6 +520,13 @@ class Q_WebServer_Pool
 	 */
 	protected function forkWorker()
 	{
+		if ($this->zygote !== null) {
+			$index = $this->forkWorkerViaZygote();
+			if ($index !== null) return $index;
+			// The zygote failed; it is gone and this fork falls through to
+			// the server, as before the zygote existed.
+		}
+
 		// STREAM_PF_UNIX doesn't exist on Windows — use INET loopback
 		$family = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
 		$pair = stream_socket_pair(
@@ -500,13 +600,26 @@ class Q_WebServer_Pool
 
 		// ── PARENT ──
 		fclose($pair[1]);
-		$sock = $pair[0];
+		return $this->registerWorker($pid, $pair[0], false);
+	}
+
+	/**
+	 * Enter a freshly forked worker in the pool: its end of the pair, idle,
+	 * watched but not yet listened to.
+	 * @method registerWorker
+	 * @param {integer} $pid
+	 * @param {resource} $sock the server's end of the worker's pair
+	 * @param {boolean} $viaZygote whether the zygote forked it
+	 * @return {integer} Worker index
+	 */
+	protected function registerWorker($pid, $sock, $viaZygote)
+	{
 		stream_set_blocking($sock, false);
 
 		$index = $this->nextIndex++;
 		$this->workers[$index] = array(
 			'pid' => $pid, 'socket' => $sock, 'busy' => false,
-			'idleSince' => microtime(true)
+			'idleSince' => microtime(true), 'zygote' => (bool) $viaZygote
 		);
 
 		$pool = $this;
@@ -518,6 +631,198 @@ class Q_WebServer_Pool
 		);
 		Q_Evented::disable($this->watchers[$index]);
 		return $index;
+	}
+
+	// ── Zygote ───────────────────────────────────────────
+
+	/**
+	 * Fork the zygote (see $zygote). Called at the end of the constructor,
+	 * before the server accepts its first connection.
+	 * @method startZygote
+	 * @return {boolean} whether it runs
+	 */
+	protected function startZygote()
+	{
+		$ctl = array();
+		if (!@socket_create_pair(AF_UNIX, SOCK_STREAM, 0, $ctl)) return false;
+		$pid = Q_WebServer_Fork::fork();
+		if ($pid === -1 || $pid === false) {
+			socket_close($ctl[0]);
+			socket_close($ctl[1]);
+			return false;
+		}
+		if ($pid === 0) {
+			// ── ZYGOTE ──
+			// The hygiene a worker gets, so what the zygote passes on is
+			// clean: not the server's end of any worker's pair, not the
+			// listeners, not any other socket stream.
+			socket_close($ctl[0]);
+			foreach ($this->workers as $w) {
+				if (isset($w['socket']) and is_resource($w['socket'])) @fclose($w['socket']);
+			}
+			$this->workers = array();
+			$this->watchers = array();
+			if (method_exists('Q_WebServer', 'closeInheritedDescriptors')) {
+				Q_WebServer::closeInheritedDescriptors();
+			}
+			self::closeInheritedSockets(null);
+			self::zygoteMain($ctl[1], $this->octane, $this->maxRequests);
+			exit(0);
+		}
+		socket_close($ctl[1]);
+		// A reply is four bytes; never wait long on a zygote that stopped.
+		@socket_set_option($ctl[0], SOL_SOCKET, SO_RCVTIMEO, array('sec' => 5, 'usec' => 0));
+		$this->zygote = array('pid' => $pid, 'ctl' => $ctl[0]);
+		return true;
+	}
+
+	/**
+	 * The zygote's life: receive a worker's end of a socket pair from the
+	 * server, fork a worker onto it, answer with the worker's pid; reap
+	 * workers as they exit; leave when the server closes the control socket.
+	 * @method zygoteMain
+	 * @static
+	 * @param {Socket} $ctl
+	 * @param {boolean} $octane
+	 * @param {integer} $maxReqs
+	 */
+	protected static function zygoteMain($ctl, $octane, $maxReqs)
+	{
+		if (function_exists('pcntl_async_signals')) pcntl_async_signals(true);
+		if (function_exists('pcntl_signal')) {
+			// Not restarting the interrupted call ($restart_syscalls false):
+			// the zygote spends its life blocked in socket_recvmsg(), and a
+			// restarted call keeps the handler waiting for the next message --
+			// every worker that exited meanwhile stayed a zombie until then.
+			// Interrupted, recvmsg() returns EINTR and the loop goes round.
+			pcntl_signal(SIGCHLD, function () {
+				while (pcntl_waitpid(-1, $st, WNOHANG) > 0) {}
+			}, false);
+			pcntl_signal(SIGTERM, function () { exit(0); }, false);
+			pcntl_signal(SIGHUP, SIG_IGN);
+		}
+		$space = socket_cmsg_space(SOL_SOCKET, SCM_RIGHTS, 1);
+		while (true) {
+			$msg = array('name' => array(), 'buffer_size' => 8, 'controllen' => $space);
+			$n = @socket_recvmsg($ctl, $msg, 0);
+			if ($n === false) {
+				// A child exited and SIGCHLD interrupted the call. recvmsg()
+				// records EINTR in the global error, not on the socket as
+				// most socket calls do -- read only from the socket, the
+				// interruption looked like a failure and the zygote left at
+				// the first worker's exit.
+				if (socket_last_error() === SOCKET_EINTR or socket_last_error($ctl) === SOCKET_EINTR) {
+					socket_clear_error();
+					socket_clear_error($ctl);
+					continue;
+				}
+				break;
+			}
+			if ($n === 0) break;   // the server is gone
+			$fd = $msg['control'][0]['data'][0] ?? null;
+			if ($fd === null) {
+				@socket_write($ctl, pack('N', 0));
+				continue;
+			}
+			$pid = pcntl_fork();
+			if ($pid === 0) {
+				// ── WORKER, forked from the zygote ──
+				socket_close($ctl);
+				if (function_exists('pcntl_signal')) {
+					pcntl_signal(SIGCHLD, SIG_DFL);
+					pcntl_signal(SIGTERM, SIG_DFL);
+					pcntl_signal(SIGHUP, SIG_DFL);
+				}
+				if (function_exists('pcntl_async_signals')) pcntl_async_signals(false);
+				$stream = is_resource($fd) ? $fd : socket_export_stream($fd);
+				if (class_exists('Q_WebServer_CompatFileWrapper', false)) {
+					Q_WebServer_CompatFileWrapper::forgetStats(true);
+					Q_WebServer_CompatFileWrapper::rememberExistence(true);
+				}
+				self::childRun($stream, $octane, $maxReqs);
+				exit(0);
+			}
+			if (is_resource($fd)) @fclose($fd);
+			else socket_close($fd);
+			@socket_write($ctl, pack('N', $pid > 0 ? $pid : 0));
+		}
+		exit(0);
+	}
+
+	/**
+	 * Fork a worker through the zygote. Null when the zygote failed -- it is
+	 * stopped, and the caller forks from the server instead.
+	 * @method forkWorkerViaZygote
+	 * @return {integer|null} Worker index
+	 */
+	protected function forkWorkerViaZygote()
+	{
+		$family = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
+		$pair = @stream_socket_pair($family, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+		if (!$pair) return $this->zygoteFailed('socketpair failed');
+		$theirs = @socket_import_stream($pair[1]);
+		$sent = $theirs !== false && @socket_sendmsg($this->zygote['ctl'], array(
+			'iov' => array('F'),
+			'control' => array(array('level' => SOL_SOCKET, 'type' => SCM_RIGHTS, 'data' => array($theirs))),
+		), 0);
+		// An imported socket leaves its descriptor to the stream, which is
+		// closed here: the zygote holds its own copy now.
+		unset($theirs);
+		fclose($pair[1]);
+		if (!$sent) {
+			fclose($pair[0]);
+			return $this->zygoteFailed('could not hand a socket to the zygote');
+		}
+		$reply = '';
+		while (strlen($reply) < 4) {
+			$chunk = @socket_read($this->zygote['ctl'], 4 - strlen($reply));
+			if ($chunk === false or $chunk === '') break;
+			$reply .= $chunk;
+		}
+		$pid = strlen($reply) === 4 ? (int) unpack('N', $reply)[1] : 0;
+		if ($pid <= 0) {
+			fclose($pair[0]);
+			return $this->zygoteFailed('the zygote did not fork a worker');
+		}
+		return $this->registerWorker($pid, $pair[0], true);
+	}
+
+	/**
+	 * Give up on the zygote: stop it, say why, and fork from the server from
+	 * now on.
+	 * @method zygoteFailed
+	 * @param {string} $why
+	 * @return {null}
+	 */
+	protected function zygoteFailed($why)
+	{
+		if (class_exists('Q_WebServer_Log', false)) {
+			Q_WebServer_Log::error('zygote: ' . $why . '; forking workers from the server from now on');
+		}
+		$this->stopZygote();
+		return null;
+	}
+
+	/**
+	 * Stop the zygote, if there is one. Its workers keep running: each ends
+	 * when its socket pair closes, as any worker does.
+	 * @method stopZygote
+	 */
+	function stopZygote()
+	{
+		if ($this->zygote === null) return;
+		$pid = (int) $this->zygote['pid'];
+		@socket_close($this->zygote['ctl']);
+		$this->zygote = null;
+		if ($pid > 0 and function_exists('posix_kill')) {
+			@posix_kill($pid, SIGTERM);
+			for ($i = 0; $i < 20; ++$i) {
+				if (Q_WebServer_Fork::waitpid($pid, $st, 1) !== 0) return;
+				usleep(10000);
+			}
+			@posix_kill($pid, SIGKILL);
+			Q_WebServer_Fork::waitpid($pid, $st, 0);
+		}
 	}
 
 	// ── Child process ────────────────────────────────────
@@ -1314,8 +1619,7 @@ class Q_WebServer_Pool
 			// firing on the dead socket, and the client waited for an answer
 			// that could never come.
 			if ($this->octane and !feof($sock)) {
-				$pid = (int) ($this->workers[$index]['pid'] ?? 0);
-				$exited = self::hasExited($pid);
+				$exited = $this->workerGone($this->workers[$index] ?? array());
 				if (!$exited) return; // no data yet; the worker is alive
 			}
 			$this->recycle($index, true);
@@ -1486,7 +1790,7 @@ class Q_WebServer_Pool
 		if (isset($this->workers[$index])) {
 			$sock = $this->workers[$index]['socket'];
 			if (is_resource($sock)) @fclose($sock);
-			$this->reap((int) $this->workers[$index]["pid"]);
+			$this->reapWorker($this->workers[$index]);
 		}
 		$this->forgetWorker($index);
 
@@ -1668,7 +1972,7 @@ class Q_WebServer_Pool
 				// while idle (killed, OOM) is not noticed until a request is
 				// sent to it -- and that request was lost. Ask first: a
 				// non-blocking waitpid is one system call and also reaps it.
-				if (!empty($w['pid']) and self::hasExited((int) $w['pid'])) {
+				if (!empty($w['pid']) and $this->workerGone($w)) {
 					$this->discardDead($i);
 					$discarded = true;
 					continue;
@@ -1696,7 +2000,7 @@ class Q_WebServer_Pool
 		$dead = 0;
 		foreach ($this->workers as $i => $w) {
 			if (!empty($w['busy']) or empty($w['pid'])) continue;
-			if (self::hasExited((int) $w['pid'])) {
+			if ($this->workerGone($w)) {
 				$this->discardDead($i);
 				++$dead;
 			}
@@ -1904,11 +2208,17 @@ class Q_WebServer_Pool
 			if (function_exists("posix_kill")) posix_kill($w["pid"], SIGTERM);
 		}
 
-		// Wait for workers to exit gracefully
+		// Wait for workers to exit gracefully. One the zygote forked is not
+		// this process's child: waitpid() answers -1 for it at once, so it is
+		// watched with processAlive() instead, and the zygote reaps it.
 		$deadline = microtime(true) + $timeout;
 		$remaining = $this->workers;
 		while (!empty($remaining) && microtime(true) < $deadline) {
 			foreach ($remaining as $i => $w) {
+				if (!empty($w['zygote'])) {
+					if (!self::processAlive((int) $w['pid'])) unset($remaining[$i]);
+					continue;
+				}
 				$result = Q_WebServer_Fork::waitpid($w['pid'], $st, 1);
 				if ($result > 0 || $result === -1) {
 					unset($remaining[$i]);
@@ -1922,10 +2232,11 @@ class Q_WebServer_Pool
 		// SIGKILL any workers that didn't exit in time
 		foreach ($remaining as $w) {
 			if (function_exists("posix_kill")) posix_kill($w["pid"], SIGKILL);
-			Q_WebServer_Fork::waitpid($w['pid'], $st, 0);
+			if (empty($w['zygote'])) Q_WebServer_Fork::waitpid($w['pid'], $st, 0);
 		}
 
 		$this->workers = array();
+		$this->stopZygote();
 	}
 
 	function idleCount()
