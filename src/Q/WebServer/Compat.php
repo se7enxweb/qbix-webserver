@@ -2587,6 +2587,21 @@ class Q_WebServer_Compat
 class Q_WebServer_CompatFileWrapper
 {
 	/**
+	 * A path without its file:// scheme, as the real filesystem functions
+	 * take it. Exactly what preg_replace('/^file:\/\//', '', $path) gave --
+	 * case-sensitive, at the start only, once -- without a regular
+	 * expression on a path that every file operation passes through.
+	 * @method bare
+	 * @static
+	 * @param {string} $path
+	 * @return {string}
+	 */
+	static function bare($path)
+	{
+		return strncmp($path, 'file://', 7) === 0 ? substr($path, 7) : $path;
+	}
+
+	/**
 	 * Set by PHP on every wrapper instance that is opened with a stream
 	 * context. Declaring it keeps PHP 8.2+ from reporting the assignment
 	 * as a dynamic property -- a deprecation notice that, with the default
@@ -2951,7 +2966,7 @@ class Q_WebServer_CompatFileWrapper
 	static function forgetFile($path)
 	{
 		self::dropStats();
-		$path = preg_replace('/^file:\/\//', '', (string) $path);
+		$path = self::bare((string) $path);
 		if (isset(self::$contentCache[$path])) {
 			self::$contentBytes -= self::$contentCache[$path][1];
 			unset(self::$contentCache[$path]);
@@ -3021,13 +3036,17 @@ class Q_WebServer_CompatFileWrapper
 
 	public function stream_open($path, $mode, $options, &$opened_path)
 	{
-		// Strip file:// prefix if present
-		$realPath = preg_replace('/^file:\/\//', '', $path);
+		// This runs for every file the hosted application opens, not only
+		// for include and require: every template, cache file and image.
+		// Both tests are exact, anchored string tests, so they are string
+		// comparisons rather than two regular expressions per open.
+		$realPath = self::bare($path);
 
-		// Only transform PHP files opened for reading (include/require)
-		$shouldTransform = (
-			$mode === 'r' || $mode === 'rb'
-		) && preg_match('/\.php$/i', $realPath)
+		// Only PHP files opened for reading (include/require) are
+		// transformed. Cheapest test first: most opens are not reads of a
+		// .php file and are settled on the mode.
+		$shouldTransform = ($mode === 'r' || $mode === 'rb')
+		  && substr_compare($realPath, '.php', -4, 4, true) === 0
 		  && Q_WebServer_Compat::isEnabled();
 
 		// Any change made through the wrapper can make a remembered stat --
@@ -3278,7 +3297,7 @@ class Q_WebServer_CompatFileWrapper
 
 	public function url_stat($path, $flags)
 	{
-		$realPath = preg_replace('/^file:\/\//', '', $path);
+		$realPath = self::bare($path);
 
 		// A path that is not there is answered without the real wrapper:
 		// glob() asks the operating system directly, and a failed stat is
@@ -3367,7 +3386,7 @@ class Q_WebServer_CompatFileWrapper
 		// "*" leaves out names beginning with a dot and GLOB_BRACE is not
 		// available everywhere; ".*" brings "." and ".." with it, as
 		// readdir() does.
-		$realPath = rtrim(preg_replace('/^file:\/\//', '', $path), '/');
+		$realPath = rtrim(self::bare($path), '/');
 		if ($realPath === '') $realPath = '/';
 		if (self::existsAndIsDir($realPath) !== true) return false;
 		$base = addcslashes($realPath === '/' ? '' : $realPath, self::globSpecials()) . '/';
@@ -3413,8 +3432,8 @@ class Q_WebServer_CompatFileWrapper
 		self::forgetFile($from);
 		self::forgetFile($to);
 		self::unwrap(strncmp($from, 'phar://', 7) === 0 ? $from : $to);
-		$result = rename(preg_replace('/^file:\/\//', '', $from),
-		                 preg_replace('/^file:\/\//', '', $to));
+		$result = rename(self::bare($from),
+		                 self::bare($to));
 		self::rewrap();
 		return $result;
 	}
@@ -3423,7 +3442,7 @@ class Q_WebServer_CompatFileWrapper
 	{
 		self::forgetFile($path);
 		self::unwrap($path);
-		$result = unlink(preg_replace('/^file:\/\//', '', $path));
+		$result = unlink(self::bare($path));
 		self::rewrap();
 		return $result;
 	}
@@ -3432,7 +3451,7 @@ class Q_WebServer_CompatFileWrapper
 	{
 		self::dropStats();
 		self::unwrap($path);
-		$result = mkdir(preg_replace('/^file:\/\//', '', $path), $mode,
+		$result = mkdir(self::bare($path), $mode,
 			$options & STREAM_MKDIR_RECURSIVE);
 		self::rewrap();
 		return $result;
@@ -3442,14 +3461,14 @@ class Q_WebServer_CompatFileWrapper
 	{
 		self::dropStats();
 		self::unwrap($path);
-		$result = rmdir(preg_replace('/^file:\/\//', '', $path));
+		$result = rmdir(self::bare($path));
 		self::rewrap();
 		return $result;
 	}
 
 	public function stream_metadata($path, $option, $value)
 	{
-		$realPath = preg_replace('/^file:\/\//', '', $path);
+		$realPath = self::bare($path);
 		self::forgetFile($realPath);
 		self::unwrap($realPath);
 		switch ($option) {
