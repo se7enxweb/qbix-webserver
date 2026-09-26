@@ -31,7 +31,7 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `keepAlive.max` | 100 | Max requests per keep-alive connection. The last one is answered with `Connection: close`, and so is any `5xx`; the header always says what the server does next. See [http.md](http.md#keep-alive) |
 | `keepAlive.timeout` | 15 | Seconds before closing an idle connection |
 | `maxConnections` | 1024 | Max simultaneous connections |
-| `fileCache.maxSize` | 64MB | Total memory for cached file responses |
+| `fileCache.maxSize` | 64MB | Total memory for cached file responses. When full, the file asked for longest ago makes room for the new one. Each file counts twice (a keep-alive and a closing form of its response). |
 | `fileCache.maxFile` | 1MB | Largest file to cache in memory |
 | `fileCache.checkInterval` | 1 | Seconds between file modification checks |
 | `rateLimit.enabled` | false | Enable per-IP rate limiting |

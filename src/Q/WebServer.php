@@ -4327,6 +4327,14 @@ WORKER;
 		}
 
 		if (isset(self::$fileCache[$cacheKey])) {
+			// Most recently used goes last, so eviction, which takes from the
+			// front, drops the file asked for longest ago.
+			if (array_key_last(self::$fileCache) !== $cacheKey) {
+				$entry = self::$fileCache[$cacheKey];
+				unset(self::$fileCache[$cacheKey]);
+				self::$fileCache[$cacheKey] = $entry;
+				unset($entry);
+			}
 			$cached = &self::$fileCache[$cacheKey];
 			$etag = $cached['etag'];
 
@@ -4502,9 +4510,12 @@ WORKER;
 		$headStr = $keepAlive ? $kaHead : $clHead;
 		self::writeAll($client, $method === 'HEAD' ? $headStr : $headStr . $body);
 
-		// Cache if small enough
+		// Cache if small enough, making room by evicting the least recently
+		// used. The test used to be "fits in what is left", which refused every
+		// file once the cache was full, so the eviction below never ran and
+		// whichever files were asked for first stayed in memory for good.
 		if ($size <= self::$fileCacheMaxFile
-			&& self::$fileCacheSize + $size * 2 < self::$fileCacheMaxSize
+			&& $size * 2 <= self::$fileCacheMaxSize
 		) {
 			self::$fileCache[$cacheKey] = array(
 				'mtime'   => $mtime,
@@ -4516,7 +4527,7 @@ WORKER;
 			);
 			self::$fileCacheSize += $size * 2;
 
-			// Evict oldest if over limit
+			// Evict least recently used until under the limit
 			while (self::$fileCacheSize > self::$fileCacheMaxSize && self::$fileCache) {
 				$evict = array_key_first(self::$fileCache);
 				self::$fileCacheSize -= self::$fileCache[$evict]['bodyLen'] * 2;
