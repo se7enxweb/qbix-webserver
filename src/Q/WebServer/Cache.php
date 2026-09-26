@@ -549,7 +549,7 @@ class Q_WebServer_Cache
 			$entry['headers']['Age'] = self::age($entry);
 			if (!$fromApcu and self::$apcuEnabled
 			and strlen($entry['body']) <= self::$apcuMaxSize) {
-				self::apcuStore('qcache:' . $key, $entry, self::ttlRemaining($entry));
+				self::apcuStore('qcache:' . $key, $entry, self::apcuTtl($entry));
 			}
 			return $entry;
 		}
@@ -564,6 +564,12 @@ class Q_WebServer_Cache
 				self::$hits++;
 				self::$hitsFrom[$fromApcu ? 'apcu' : 'disk']++;
 				self::$stale++;
+				// Back into memory for the rest of the window, if it had
+				// dropped out: a page served stale is by definition a busy one.
+				if (!$fromApcu and self::$apcuEnabled
+				and strlen($entry['body']) <= self::$apcuMaxSize) {
+					self::apcuStore('qcache:' . $key, $entry, self::apcuTtl($entry));
+				}
 				$entry['headers']['X-Cache'] = 'STALE';
 				$entry['headers']['Age'] = self::age($entry);
 				return $entry;
@@ -770,7 +776,7 @@ class Q_WebServer_Cache
 
 		// Store in APCu if small enough
 		if (self::$apcuEnabled && strlen($body) <= self::$apcuMaxSize) {
-			self::apcuStore('qcache:' . $key, $entry, $ttl);
+			self::apcuStore('qcache:' . $key, $entry, self::apcuTtl($entry));
 		}
 
 		// The validators, kept apart from the page they describe.
@@ -1583,6 +1589,21 @@ class Q_WebServer_Cache
 			}
 		}
 		return $directives;
+	}
+
+	/**
+	 * How long APCu keeps an entry: its lifetime plus the stale window.
+	 *
+	 * Kept for the lifetime alone, APCu dropped the copy the moment the page
+	 * expired -- exactly when staleWhileRevalidate starts serving it -- so
+	 * every stale hit, on a page busy enough to be stale-served at all, was a
+	 * disk read and a decode. Whether an entry may still be served is decided
+	 * in get() from its own expiry, never from APCu's.
+	 */
+	static function apcuTtl($entry)
+	{
+		if (($entry['expires'] ?? 0) <= 0) return 86400;
+		return max(1, $entry['expires'] + max(0, self::$staleWhileRevalidate) - time());
 	}
 
 	static function ttlRemaining($entry)

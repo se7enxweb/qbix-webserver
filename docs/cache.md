@@ -75,7 +75,8 @@ a lifetime is kept.
 When `staleWhileRevalidate` is set, a page that has just expired is still served,
 marked `STALE`, for that many seconds; one request renders the new copy while the
 others are answered from the old one, so a busy page never sends every visitor to
-PHP at the same moment. Past that window the entry is removed.
+PHP at the same moment. Past that window the entry is removed. APCu keeps its copy
+for the lifetime plus the window, so the stale answers come from memory too.
 
 `404` and `410` answers are kept for `negativeTtl` seconds, whatever their
 `Cache-Control` says, and only when it is set.
