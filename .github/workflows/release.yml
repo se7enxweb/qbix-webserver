@@ -442,6 +442,22 @@ jobs:
             Write-Host "::endgroup::"
           }
 
+      - name: Show why the PHP build failed (Unix)
+        if: failure() && runner.os != 'Windows'
+        shell: bash
+        run: |
+          for f in log/spc.output.log log/spc.shell.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f -- lines with errors"
+            # No match is an answer, not a failure: under -e -o pipefail a grep
+            # that finds nothing would end the step before the next log.
+            grep -n -E 'error:|Error [0-9]|undefined reference|fatal error|No rule to make' "$f" | tail -80 || true
+            echo "::endgroup::"
+            echo "::group::$f -- last 150 lines"
+            tail -150 "$f" || true
+            echo "::endgroup::"
+          done
+
       - name: Build qbix_fork.dll (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
