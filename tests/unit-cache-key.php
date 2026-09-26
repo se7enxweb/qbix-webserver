@@ -76,10 +76,36 @@ $keys = array();
 foreach ($variants as $v) {
 	$keys[$v] = $C::cacheKey(request('/a', array('accept-encoding' => $v)));
 }
-// br is offered by all but the first two, so those two share a key and the
-// rest share another; what matters is that there are not five.
-check('encoding spellings collapse to a few entries, not one each',
-	count(array_unique($keys)) <= 2, true);
+// All of them get the same stored body -- gzip, the only coding the cache
+// stores -- so all of them are one entry. Offering br as well used to make a
+// second entry holding identical gzip bytes.
+check('encoding spellings that all get gzip are one entry',
+	count(array_unique($keys)), 1);
+check('br alongside gzip does not make a second entry',
+	$C::cacheKey(request('/a', array('accept-encoding' => 'gzip, deflate, br'))),
+	$C::cacheKey(request('/a', array('accept-encoding' => 'gzip'))));
+// A client offering only br is sent the body as rendered, since gzip is all
+// the cache stores; it shares the plain entry and never gets gzip.
+check('br without gzip shares the plain entry',
+	$C::cacheKey(request('/a', array('accept-encoding' => 'br'))),
+	$C::cacheKey(request('/a', array())));
+// q=0 is a refusal, not an offer.
+check('gzip;q=0 is not gzip', $C::storedCoding('gzip;q=0'), '');
+check('...and shares the plain entry',
+	$C::cacheKey(request('/a', array('accept-encoding' => 'gzip;q=0, br'))),
+	$C::cacheKey(request('/a', array())));
+check('br;q=0 alongside gzip is still gzip', $C::storedCoding('br;q=0, gzip'), 'gzip');
+check('"*" accepts gzip', $C::storedCoding('*'), 'gzip');
+check('"*" with gzip refused does not', $C::storedCoding('gzip;q=0, *'), '');
+$page = array('status' => 200, 'body' => str_repeat("<p>compressible</p>\n", 200),
+	'headers' => array('Content-Type' => 'text/html'));
+check('a client refusing gzip is stored the body as rendered',
+	isset($C::encodeBody($page, 'gzip;q=0')['headers']['Content-Encoding']), false);
+check('a client accepting it is stored gzip',
+	$C::encodeBody($page, 'gzip, br')['headers']['Content-Encoding'] ?? null, 'gzip');
+check('the key and the stored body agree on the coding',
+	array($C::storedCoding('gzip, deflate, br'), $C::storedCoding('br'), $C::storedCoding('')),
+	array('gzip', '', ''));
 
 check('the same request twice is the same entry',
 	$C::cacheKey(request('/a', array('host' => 'x'))),

@@ -18,6 +18,7 @@
   <div class="tab" data-tab="security" onclick="showTab('security')">Security</div>
   <div class="tab" data-tab="scripts" onclick="showTab('scripts')">Scripts</div>
   <div class="tab" data-tab="plugins" onclick="showTab('plugins')">Plugins</div>
+  <div class="tab" data-tab="cache" onclick="showTab('cache')">Cache</div>
   <div class="tab" data-tab="workers" onclick="showTab('workers')">Workers</div>
   <div class="tab" data-tab="logs" onclick="showTab('logs')">Logs</div>
   <div class="tab" data-tab="cron" onclick="showTab('cron')">Cron</div>
@@ -241,6 +242,62 @@
 <div id="tab-frameworks" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">Framework Management</h2>
   <div id="fw-list"><p style="color:var(--dim)">Detecting frameworks...</p></div>
+</div>
+
+<!-- CACHE TAB -->
+<div id="tab-cache" class="content hidden">
+  <div class="cache-head">
+    <h2 style="font-size:16px">Response Cache</h2>
+    <span class="cache-live" title="Refreshed every 2 seconds while this tab is open"><span class="pulse"></span> Live</span>
+  </div>
+  <div id="cache-banner"></div>
+  <div class="card">
+    <div id="cache-statusline" class="cache-statusline"><span class="cache-dim">Reading the cache…</span></div>
+    <div class="cache-toggles">
+      <label class="cache-switch"><input type="checkbox" id="cache-sw-enabled" onchange="cacheToggle('enabled', this)"><span class="cache-slider"></span>
+        <span><b>Cache</b><small>Keep rendered pages and answer repeat visits from them.</small><small id="cache-src-enabled"></small></span></label>
+      <label class="cache-switch"><input type="checkbox" id="cache-sw-apcu" onchange="cacheToggle('apcu', this)"><span class="cache-slider"></span>
+        <span><b>APCu</b><small>Hold small pages in shared memory, so they are not read from disk.</small><small id="cache-src-apcu"></small></span></label>
+      <label class="cache-switch"><input type="checkbox" id="cache-sw-memory" onchange="cacheToggle('memory', this)"><span class="cache-slider"></span>
+        <span><b>Memory layer</b><small>Keep the busiest pages inside the server itself: the fastest answers.</small><small id="cache-src-memory"></small></span></label>
+    </div>
+  </div>
+  <div id="cache-cards" class="cache-cards"></div>
+  <div class="card">
+    <h3>Actions</h3>
+    <div class="cache-actions">
+      <div class="cache-action">
+        <b>Clear everything</b>
+        <p>Every stored page is rendered afresh on its next request. Safe at any time; takes effect within a second.</p>
+        <div><button class="btn btn-red" onclick="cacheClearAsk()">Clear everything…</button></div>
+      </div>
+      <div class="cache-action">
+        <b>Purge a page</b>
+        <p>Forget one page, for example after editing it.</p>
+        <div class="dom-row"><input id="cache-purge-url" placeholder="/about" aria-label="Page to purge" onkeydown="if(event.key==='Enter')cachePurgeForm()"><button class="btn btn-ghost" onclick="cachePurgeForm()">Purge</button></div>
+        <label class="cache-check"><input type="checkbox" id="cache-purge-regex"> A pattern (regular expression, e.g. #^/blog/#)</label>
+      </div>
+      <div class="cache-action">
+        <b>Warm a page</b>
+        <p>Render one page now and store it, so the next visitor gets it at once.</p>
+        <div class="dom-row"><input id="cache-warm-url" placeholder="/" aria-label="Page to warm" onkeydown="if(event.key==='Enter')cacheWarmForm()"><button class="btn btn-ghost" onclick="cacheWarmForm()">Warm</button></div>
+        <div id="cache-warm-log"></div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Settings</h3>
+    <div id="cache-settings"><p class="cache-dim">Loading…</p></div>
+  </div>
+  <div class="card">
+    <h3>Stored pages</h3>
+    <div class="cache-toolbar">
+      <input id="cache-q" type="search" placeholder="Filter by address, e.g. /blog" aria-label="Filter stored pages by address" oninput="cacheSearch()">
+      <button class="btn btn-ghost" onclick="loadCacheEntries()">Refresh</button>
+    </div>
+    <div id="cache-entries-info" class="cache-dim" style="margin-bottom:6px"></div>
+    <div id="cache-entries"></div>
+  </div>
 </div>
 
 <!-- WORKERS TAB -->

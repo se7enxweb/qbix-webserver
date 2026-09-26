@@ -56,6 +56,44 @@ class Q_WebServer_Cache
 	static $hits = 0;
 	static $misses = 0;
 
+	/** @var array hits by where they were answered from: a 304 off the validator index, the server's own memory, APCu, disk */
+	static $hitsFrom = array('index' => 0, 'memory' => 0, 'apcu' => 0, 'disk' => 0);
+
+	/**
+	 * The in-process layer in front of APCu: the hottest entries, kept in the
+	 * server process itself, so a hit costs neither an unserialise nor a copy
+	 * out of shared memory. Off (0) by default. Q.web.cache.memory.*
+	 * @property $memoryMaxEntries
+	 * @type {integer}
+	 */
+	static $memoryMaxEntries = 0;
+	/** @var int most bytes of bodies held in memory */
+	static $memoryMaxBytes = 33554432;
+	/** @var int largest body kept in memory */
+	static $memoryMaxEntrySize = 65536;
+	/** @var int entries dropped to stay within the limits */
+	static $memoryEvictions = 0;
+
+	/** @var array key => entry, least recently used first */
+	private static $memory = array();
+	/** @var int bytes of bodies in $memory */
+	private static $memoryBytes = 0;
+	/** @var int the one process whose memory may answer: the one that ran init() */
+	private static $memoryPid = 0;
+	/** @var string|null the epoch token the memory was filled under */
+	private static $memoryEpoch = null;
+	/** @var int when the epoch was last read */
+	private static $memoryEpochChecked = -1;
+
+	/** @var int apcu_store() calls that failed: a full segment, or APCu unusable */
+	static $apcuStoreFailures = 0;
+
+	/** @var string[] what init() found wrong with APCu, as said on STDERR */
+	static $apcuWarnings = array();
+
+	/** @var bool whether the warnings have been said in this process */
+	private static $apcuWarned = false;
+
 	/**
 	 * How long past its expiry an entry may still be served while one request
 	 * renders a fresh one. 0 keeps the old behaviour exactly.
@@ -226,8 +264,17 @@ class Q_WebServer_Cache
 		}
 
 		$apcu = Q::ifset($config, 'apcu', array());
-		self::$apcuEnabled = (bool) Q::ifset($apcu, 'enabled', function_exists('apcu_fetch'));
 		self::$apcuMaxSize = (int) Q::ifset($apcu, 'maxSize', 65536);
+		$wanted = Q::ifset($apcu, 'enabled', null);
+		self::$apcuEnabled = self::apcuUsable($wanted === null ? null : (bool) $wanted);
+		$memory = Q::ifset($config, 'memory', array());
+		self::$memoryMaxEntries = max(0, (int) Q::ifset($memory, 'maxEntries', 0));
+		self::$memoryMaxBytes = max(0, (int) Q::ifset($memory, 'maxBytes', 33554432));
+		self::$memoryMaxEntrySize = max(0, (int) Q::ifset($memory, 'maxEntrySize', 65536));
+		self::$memory = array();
+		self::$memoryBytes = 0;
+		self::$memoryPid = function_exists('getmypid') ? getmypid() : 0;
+		self::$memoryEpochChecked = -1;
 		self::$defaultTtl = (int) Q::ifset($config, 'defaultTtl', 0);
 		self::$skipCookies = Q::ifset($config, 'skip', 'cookies', array('Q_sid', 'PHPSESSID'));
 		self::$staleWhileRevalidate = (int) Q::ifset($config, 'staleWhileRevalidate', 0);
@@ -240,6 +287,181 @@ class Q_WebServer_Cache
 			self::$dir ? self::$dir . DIRECTORY_SEPARATOR . '.generation' : '');
 		self::$generationChecked = -1;
 		self::forgetOnAccessListChange();
+	}
+
+	// ── The in-process layer ────────────────────────────────────────────
+	//
+	// Only the process that ran init() -- the server -- answers from it. A
+	// worker forked afterwards inherits a copy that nobody keeps up to date,
+	// so it never reads it. Anything a worker changes reaches the server
+	// through the epoch file: purge(), clear() and a put() made outside the
+	// server write a new token into it, and the server, reading it at most
+	// once a second as it reads the generation marker, empties its memory
+	// when the token changes. A token rather than an mtime, so two changes
+	// within one second cannot be mistaken for one.
+
+	/** Whether this process answers from memory. */
+	private static function memoryActive()
+	{
+		return self::$memoryMaxEntries > 0
+			and self::$memoryPid === (function_exists('getmypid') ? getmypid() : 0);
+	}
+
+	/** Where the epoch token lives, or '' without a cache directory. */
+	private static function memoryEpochFile()
+	{
+		return self::$dir ? self::$dir . DIRECTORY_SEPARATOR . '.memory-epoch' : '';
+	}
+
+	/** Empty the memory when another process has changed the store since it was filled. */
+	private static function memoryCheckEpoch()
+	{
+		$now = time();
+		if ($now === self::$memoryEpochChecked) return;
+		self::$memoryEpochChecked = $now;
+		$file = self::memoryEpochFile();
+		$token = $file === '' ? '' : (string) @file_get_contents($file);
+		if ($token !== self::$memoryEpoch) {
+			if (self::$memoryEpoch !== null) self::memoryFlush();
+			self::$memoryEpoch = $token;
+		}
+	}
+
+	/** Tell the server's memory that the store changed under it. */
+	private static function memorySignal()
+	{
+		if (self::$memoryMaxEntries <= 0) return;
+		if (self::memoryActive()) self::memoryFlush();
+		$file = self::memoryEpochFile();
+		if ($file === '') return;
+		Q_WebServer_Modes::put($file, uniqid('', true), LOCK_EX, self::$fileMode);
+		// This process's own copy is current: it made the change.
+		if (self::memoryActive()) {
+			self::$memoryEpoch = (string) @file_get_contents($file);
+			self::$memoryEpochChecked = time();
+		}
+	}
+
+	/** @return {array|null} the entry held in memory for $key */
+	private static function memoryGet($key)
+	{
+		if (!self::memoryActive()) return null;
+		self::memoryCheckEpoch();
+		if (!isset(self::$memory[$key])) return null;
+		$entry = self::$memory[$key];
+		// Most recently used goes last; eviction takes from the front.
+		unset(self::$memory[$key]);
+		self::$memory[$key] = $entry;
+		return $entry;
+	}
+
+	/** Keep $entry in memory, within the limits, evicting the least recently used. */
+	private static function memoryPut($key, $entry)
+	{
+		if (!self::memoryActive()) return;
+		self::memoryCheckEpoch();
+		$size = strlen($entry['body'] ?? '');
+		if ($size > self::$memoryMaxEntrySize or $size > self::$memoryMaxBytes) return;
+		self::memoryDrop($key);
+		unset($entry['headers']['X-Cache'], $entry['headers']['Age']);
+		self::$memory[$key] = $entry;
+		self::$memoryBytes += $size;
+		while (self::$memory and (count(self::$memory) > self::$memoryMaxEntries
+		or self::$memoryBytes > self::$memoryMaxBytes)) {
+			$first = array_key_first(self::$memory);
+			self::memoryDrop($first);
+			self::$memoryEvictions++;
+		}
+	}
+
+	private static function memoryDrop($key)
+	{
+		if (!isset(self::$memory[$key])) return;
+		self::$memoryBytes -= strlen(self::$memory[$key]['body'] ?? '');
+		unset(self::$memory[$key]);
+	}
+
+	private static function memoryFlush()
+	{
+		self::$memory = array();
+		self::$memoryBytes = 0;
+	}
+
+	/**
+	 * Whether APCu can hold entries in this process, and say so when it
+	 * cannot although it looks as if it could.
+	 *
+	 * function_exists('apcu_fetch') is true whenever the extension is loaded,
+	 * including under the CLI with apc.enable_cli=0 -- PHP's default. There
+	 * every store fails and every fetch misses, without an error: the cache
+	 * ran from disk while its settings said memory, and the only sign was a
+	 * throughput that halved from one machine to the next. apcu_enabled()
+	 * answers the real question.
+	 *
+	 * @method apcuUsable
+	 * @static
+	 * @param {boolean|null} $wanted Q.web.cache.apcu.enabled; null when unset
+	 * @return {boolean}
+	 */
+	static function apcuUsable($wanted)
+	{
+		$loaded = function_exists('apcu_fetch');
+		$usable = ($loaded and function_exists('apcu_enabled') and apcu_enabled());
+		$warn = array();
+		if ($wanted !== false and $loaded and !$usable) {
+			$warn[] = 'APCu is loaded but disabled in this process (apc.enable_cli is off),'
+				. ' so cached pages are read from disk. Start PHP with -d apc.enable_cli=1,'
+				. ' or set it in php.ini.';
+		}
+		if ($wanted === true and !$loaded) {
+			$warn[] = 'Q.web.cache.apcu.enabled is true but APCu is not loaded,'
+				. ' so cached pages are read from disk.';
+		}
+		if ($usable and $wanted !== false) {
+			if (ini_get('apc.use_request_time')) {
+				// The "request" of a long-running server is its whole life, so an
+				// entry stored an hour after startup with a lifetime of five
+				// minutes is already expired when it is written.
+				$warn[] = "apc.use_request_time=1 measures APCu lifetimes from the server's"
+					. ' start, so entries expire early. Set apc.use_request_time=0.';
+			}
+			$shm = self::iniBytes(ini_get('apc.shm_size'));
+			if ($shm > 0 and self::$apcuMaxSize >= $shm) {
+				$warn[] = 'Q.web.cache.apcu.maxSize (' . self::$apcuMaxSize . ' bytes) is not'
+					. ' smaller than apc.shm_size (' . $shm . ' bytes); one entry could fill it.';
+			}
+		}
+		self::$apcuWarnings = $warn;
+		if ($warn and !self::$apcuWarned) {
+			self::$apcuWarned = true;
+			foreach ($warn as $w) fwrite(STDERR, "  cache: $w\n");
+		}
+		return $wanted === null ? $usable : ($wanted and $usable);
+	}
+
+	/** "32M" -> 33554432, as PHP reads a size setting. */
+	private static function iniBytes($value)
+	{
+		$value = trim((string) $value);
+		if ($value === '') return 0;
+		$n = (int) $value;
+		switch (strtoupper(substr($value, -1))) {
+			case 'G': $n *= 1024; // fall through
+			case 'M': $n *= 1024; // fall through
+			case 'K': $n *= 1024;
+		}
+		return $n;
+	}
+
+	/**
+	 * Store in APCu, counting a refusal. A full segment, or an APCu that cannot
+	 * be used, answers false; before this nobody could tell.
+	 */
+	private static function apcuStore($key, $value, $ttl)
+	{
+		$ok = @apcu_store($key, $value, $ttl);
+		if (!$ok) self::$apcuStoreFailures++;
+		return $ok;
 	}
 
 	/**
@@ -379,12 +601,16 @@ class Q_WebServer_Cache
 	 * @method get
 	 * @static
 	 * @param {array} $parsed Parsed request
+	 * @param {boolean} [$allowHead=false] answer a HEAD from the GET's entry.
+	 *   Only for a caller that then sends the headers without the body; the
+	 *   HTTP/2 and route() paths hand the entry on whole, so they leave it off.
 	 * @return {array|null} [status, headers, body] or null
 	 */
-	static function get($parsed)
+	static function get($parsed, $allowHead = false)
 	{
 		if (!self::$enabled) return null;
-		if ($parsed['method'] !== 'GET') return null;
+		if ($parsed['method'] !== 'GET'
+		and !($allowHead and $parsed['method'] === 'HEAD')) return null;
 		if (self::isServerPath($parsed['path'] ?? '')) return null;
 
 		// Skip cache if request has bypass cookies, or credentials of its own
@@ -415,6 +641,7 @@ class Q_WebServer_Cache
 		$fresh = self::notModifiedFromIndex($parsed, $key);
 		if ($fresh !== null) {
 			self::$hits++;
+			self::$hitsFrom['index']++;
 			return $fresh;
 		}
 
@@ -424,6 +651,22 @@ class Q_WebServer_Cache
 		// copy also expired, be handed its own claim back as a refusal -- so
 		// the request that was supposed to render was served stale instead,
 		// and nothing ever rendered.
+		// The server's own memory first. It holds only fresh copies of what
+		// the stores below hold, so it answers only a fresh, current entry;
+		// anything else falls through to the one decision made below.
+		$held = self::memoryGet($key);
+		if ($held !== null) {
+			$expires = $held['expires'] ?? 0;
+			if (!self::isOldGeneration($held) and ($expires === 0 or $expires > time())) {
+				self::$hits++;
+				self::$hitsFrom['memory']++;
+				$held['headers']['X-Cache'] = 'HIT';
+				$held['headers']['Age'] = self::age($held);
+				return $held;
+			}
+			self::memoryDrop($key);
+		}
+
 		$entry = null;
 		$fromApcu = false;
 		if (self::$apcuEnabled) {
@@ -453,11 +696,13 @@ class Q_WebServer_Cache
 		$expires = isset($entry['expires']) ? $entry['expires'] : 0;
 		if ($expires === 0 or $expires > time()) {
 			self::$hits++;
+			self::$hitsFrom[$fromApcu ? 'apcu' : 'disk']++;
+			self::memoryPut($key, $entry);
 			$entry['headers']['X-Cache'] = 'HIT';
 			$entry['headers']['Age'] = self::age($entry);
 			if (!$fromApcu and self::$apcuEnabled
 			and strlen($entry['body']) <= self::$apcuMaxSize) {
-				apcu_store('qcache:' . $key, $entry, self::ttlRemaining($entry));
+				self::apcuStore('qcache:' . $key, $entry, self::apcuTtl($entry));
 			}
 			return $entry;
 		}
@@ -470,7 +715,14 @@ class Q_WebServer_Cache
 			if (!self::claimRevalidation($key)) {
 				// Someone else is rendering. This one gets the old page now.
 				self::$hits++;
+				self::$hitsFrom[$fromApcu ? 'apcu' : 'disk']++;
 				self::$stale++;
+				// Back into memory for the rest of the window, if it had
+				// dropped out: a page served stale is by definition a busy one.
+				if (!$fromApcu and self::$apcuEnabled
+				and strlen($entry['body']) <= self::$apcuMaxSize) {
+					self::apcuStore('qcache:' . $key, $entry, self::apcuTtl($entry));
+				}
 				$entry['headers']['X-Cache'] = 'STALE';
 				$entry['headers']['Age'] = self::age($entry);
 				return $entry;
@@ -677,8 +929,13 @@ class Q_WebServer_Cache
 
 		// Store in APCu if small enough
 		if (self::$apcuEnabled && strlen($body) <= self::$apcuMaxSize) {
-			apcu_store('qcache:' . $key, $entry, $ttl);
+			self::apcuStore('qcache:' . $key, $entry, self::apcuTtl($entry));
 		}
+
+		// Into the server's memory when this is the server; from anywhere
+		// else, tell the server its copy of this page may now be old.
+		if (self::memoryActive()) self::memoryPut($key, $entry);
+		else self::memorySignal();
 
 		// The validators, kept apart from the page they describe.
 		//
@@ -723,14 +980,23 @@ class Q_WebServer_Cache
 	 * @method purge
 	 * @static
 	 * @param {string} $pattern URL path or regex
+	 * @param {boolean|null} [$isRegex=null] true: $pattern is a regex; false:
+	 *   an exact URL, even one that starts and ends with "/" (which the guess
+	 *   below takes for a regex, so "/blog/" would purge every URL containing
+	 *   "blog"); null: guessed, as before
+	 * @return {integer} how many stored entries were removed
 	 */
-	static function purge($pattern)
+	static function purge($pattern, $isRegex = null)
 	{
-		if (!self::$dir || !is_dir(self::$dir)) return;
+		if (!self::$dir || !is_dir(self::$dir)) return 0;
+		self::memorySignal();
+		$removed = 0;
 
 		// If it looks like a regex (starts with a delimiter), match against files
-		$isRegex = (strlen($pattern) > 2 && $pattern[0] === $pattern[strlen($pattern)-1])
-			|| (strlen($pattern) > 2 && $pattern[0] === '#');
+		if ($isRegex === null) {
+			$isRegex = (strlen($pattern) > 2 && $pattern[0] === $pattern[strlen($pattern)-1])
+				|| (strlen($pattern) > 2 && $pattern[0] === '#');
+		}
 
 		$files = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator(self::$dir, RecursiveDirectoryIterator::SKIP_DOTS)
@@ -744,7 +1010,7 @@ class Q_WebServer_Cache
 			if ($url === '') continue;
 			$match = $isRegex ? preg_match($pattern, $url) : ($url === $pattern);
 			if ($match) {
-				@unlink($file->getPathname());
+				if (@unlink($file->getPathname())) $removed++;
 				if (self::$apcuEnabled) {
 					// The key as it was filed, not one derived from the URL.
 					// One URL has as many entries as it has content-codings,
@@ -762,6 +1028,26 @@ class Q_WebServer_Cache
 				}
 			}
 		}
+		return $removed;
+	}
+
+	/**
+	 * Where the entry filed under $key is held right now: in this process's
+	 * memory layer, in APCu, on disk. For the control panel's entry browser;
+	 * reads nothing but existence.
+	 * @method heldIn
+	 * @static
+	 * @param {string} $key
+	 * @return {array} memory, apcu, disk => boolean
+	 */
+	static function heldIn($key)
+	{
+		$path = self::filePath($key);
+		return array(
+			'memory' => self::memoryActive() && isset(self::$memory[$key]),
+			'apcu' => self::$apcuEnabled && function_exists('apcu_exists') && apcu_exists('qcache:' . $key),
+			'disk' => $path !== null && is_file($path),
+		);
 	}
 
 	/**
@@ -792,6 +1078,7 @@ class Q_WebServer_Cache
 				$f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
 			}
 		}
+		self::memorySignal();
 	}
 
 	/**
@@ -978,7 +1265,7 @@ class Q_WebServer_Cache
 		$ttl = self::ttlRemaining($entry);
 		if ($ttl <= 0) return;
 
-		apcu_store('qcache:v:' . $key, array(
+		self::apcuStore('qcache:v:' . $key, array(
 			'headers' => $headers,
 			'expires' => isset($entry['expires']) ? $entry['expires'] : 0,
 			'stored'  => isset($entry['stored']) ? (int) $entry['stored'] : time(),
@@ -1176,7 +1463,7 @@ class Q_WebServer_Cache
 			if ($lk === 'content-type') $contentType = strtolower((string) $v);
 		}
 
-		if (strpos(strtolower((string) $accept), 'gzip') === false) return $response;
+		if (self::storedCoding($accept) !== 'gzip') return $response;
 		if (!function_exists('gzencode')) return $response;
 
 		$ok = false;
@@ -1380,15 +1667,33 @@ class Q_WebServer_Cache
 			if ($root !== null) $parts .= '|root=' . $root;
 		}
 
-		// Include Accept-Encoding in key for compressed variants
-		$ae = $parsed['headers']['accept-encoding'] ?? '';
-		if (strpos($ae, 'br') !== false) {
-			$parts .= '|br';
-		} elseif (strpos($ae, 'gzip') !== false) {
-			$parts .= '|gzip';
-		}
+		// Filed under the coding the stored body will actually be in, which
+		// is what encodeBody() decides from the same header. Keyed on what the
+		// client could accept instead, a brotli-capable browser got a |br entry
+		// holding the very gzip bytes of the |gzip entry beside it: every page
+		// rendered, written and held in APCu twice for no difference in output.
+		$coding = self::storedCoding($parsed['headers']['accept-encoding'] ?? '');
+		if ($coding !== '') $parts .= '|' . $coding;
 
 		return md5($parts);
+	}
+
+	/**
+	 * The content-coding a response for this Accept-Encoding is stored in:
+	 * 'gzip', or '' for the body as rendered. The one place that decides it,
+	 * for both the key and encodeBody(), so the two cannot drift apart.
+	 * @method storedCoding
+	 * @static
+	 * @param {string} $acceptEncoding
+	 * @return {string}
+	 */
+	static function storedCoding($acceptEncoding)
+	{
+		// The same reading of Accept-Encoding as everything else the server
+		// compresses: a coding refused with q=0 is refused. A substring test
+		// took "gzip;q=0" for a yes and sent gzip to a client that said no.
+		if (!class_exists('Q_WebServer_Headers', false)) require_once __DIR__ . '/Headers.php';
+		return Q_WebServer_Headers::acceptsCoding((string) $acceptEncoding, 'gzip') ? 'gzip' : '';
 	}
 
 	static function cacheKeyFromUrl($url)
@@ -1478,6 +1783,21 @@ class Q_WebServer_Cache
 		return $directives;
 	}
 
+	/**
+	 * How long APCu keeps an entry: its lifetime plus the stale window.
+	 *
+	 * Kept for the lifetime alone, APCu dropped the copy the moment the page
+	 * expired -- exactly when staleWhileRevalidate starts serving it -- so
+	 * every stale hit, on a page busy enough to be stale-served at all, was a
+	 * disk read and a decode. Whether an entry may still be served is decided
+	 * in get() from its own expiry, never from APCu's.
+	 */
+	static function apcuTtl($entry)
+	{
+		if (($entry['expires'] ?? 0) <= 0) return 86400;
+		return max(1, $entry['expires'] + max(0, self::$staleWhileRevalidate) - time());
+	}
+
 	static function ttlRemaining($entry)
 	{
 		if ($entry['expires'] <= 0) return 86400;
@@ -1485,15 +1805,54 @@ class Q_WebServer_Cache
 	}
 
 	/**
-	 * Stats for the dashboard.
+	 * Stats for the dashboard and /Q/health.
+	 *
+	 * hits, misses and hitRate as always; then where the hits came from, so a
+	 * cache that has quietly fallen back to disk shows it, and what APCu itself
+	 * says about its segment. Read at most once a second (the stats throttle),
+	 * so the two APCu calls cost nothing that matters.
 	 */
 	static function stats()
 	{
 		$total = self::$hits + self::$misses;
-		return array(
+		$out = array(
 			'hits' => self::$hits,
 			'misses' => self::$misses,
 			'hitRate' => $total > 0 ? round(self::$hits / $total * 100, 1) : 0,
+			'stale' => self::$stale,
+			'hitsFrom' => self::$hitsFrom,
+			'memory' => array(
+				'enabled' => self::$memoryMaxEntries > 0,
+				'entries' => count(self::$memory),
+				'bytes' => self::$memoryBytes,
+				'maxEntries' => self::$memoryMaxEntries,
+				'maxBytes' => self::$memoryMaxBytes,
+				'evictions' => self::$memoryEvictions,
+			),
+			'apcu' => array(
+				'enabled' => self::$apcuEnabled,
+				'maxSize' => self::$apcuMaxSize,
+				'storeFailures' => self::$apcuStoreFailures,
+				'warnings' => self::$apcuWarnings,
+			),
 		);
+		if (self::$apcuEnabled and function_exists('apcu_sma_info')) {
+			$sma = @apcu_sma_info(true);
+			if (is_array($sma)) {
+				$size = (int) ($sma['num_seg'] ?? 1) * (int) ($sma['seg_size'] ?? 0);
+				$avail = (int) ($sma['avail_mem'] ?? 0);
+				$out['apcu']['memory'] = array(
+					'size' => $size,
+					'available' => $avail,
+					'usedPercent' => $size > 0 ? round(($size - $avail) / $size * 100, 1) : 0,
+				);
+			}
+			$info = @apcu_cache_info(true);
+			if (is_array($info)) {
+				$out['apcu']['entries'] = (int) ($info['num_entries'] ?? 0);
+				$out['apcu']['expunges'] = (int) ($info['expunges'] ?? 0);
+			}
+		}
+		return $out;
 	}
 }

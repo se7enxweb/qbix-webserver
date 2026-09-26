@@ -74,8 +74,8 @@ class Q_WebServer_Precompress
 		if (!self::compressible($contentType)) {
 			return null;
 		}
-		$accept = strtolower($requestHeaders['accept-encoding'] ?? '');
-		if (strpos($accept, 'gzip') === false || !function_exists('gzencode')) {
+		$accept = (string) ($requestHeaders['accept-encoding'] ?? '');
+		if (!Q_WebServer_Headers::acceptsCoding($accept, 'gzip') || !function_exists('gzencode')) {
 			return null;
 		}
 		$dir = self::dir();

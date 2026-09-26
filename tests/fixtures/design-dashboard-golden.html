@@ -252,7 +252,7 @@ el('srps',(s.rps)+' avg req/s');
 el('phpn',s.phpRequests.toLocaleString());el('stn',s.staticRequests.toLocaleString());
 // Offer every status code the server has recorded, not just the live ones.
 if(s.statusCodes){for(var _sc in s.statusCodes){if(!knownCodes[_sc]){knownCodes[_sc]=1;addScOption(_sc)}}}
-el('reqc',s.requests.toLocaleString()+' total');
+el('reqc',s.requests.toLocaleString()+' total'+((+s.hiddenPanelRequests||0)>0?' &#183; '+(+s.hiddenPanelRequests).toLocaleString()+' panel /Q/ requests hidden':''));
 // Sync uptime from server
 upSec=s.uptimeSec||0;
 // Sync sparkline from server

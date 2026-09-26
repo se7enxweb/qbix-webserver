@@ -109,6 +109,7 @@ You can also package your entire app — code, assets, SQLite database — into 
 | 🔒 | [Server Headers](docs/headers.md) | Cache-Control, X-Q-Cache-Tree, X-Accel-Redirect, ETag |
 | 🗃️ | [Response Cache](docs/cache.md) | What is kept and for how long, the generation marker, every setting |
 | 🛡️ | [Security](docs/security.md) | What is refused and why: document-root containment, request framing, HTTP/2 frame validation, header injection |
+| 🛂 | [Control Panel: signing in](docs/panel.md) | The default password `panel`, the first sign-in, locking the default down, a forgotten password |
 | 🔑 | [Panel Passwords](docs/passwords.md) | bcrypt storage, the password rules with examples, the default key and its forced change, lockout, `qbixctl panel:password` |
 | 🔐 | [Two-Factor Auth](docs/2fa.md) | Optional TOTP second factor for the panel (off by default): enrollment, recovery codes, the config flag, `qbixctl panel:2fa` |
 | 🌐 | [HTTP](docs/http.md) | Fork-per-request mode, request lifecycle |

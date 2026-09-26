@@ -291,6 +291,15 @@ class Q_WebServer
 		// Initialize dashboard stats (uptime tracking)
 		Q_WebServer_Dashboard::init();
 		Q_WebServer_Log::init();
+		// Cache settings saved in the control panel win over the configuration
+		// file: laid over Q.web.cache here, before init() reads it, so they
+		// survive a restart. Only Q.web.cache; nothing else is taken from there.
+		try {
+			if (!class_exists('Q_WebServer_Panel_Cache', false)) require_once __DIR__ . '/WebServer/Panel/Cache.php';
+			Q_WebServer_Panel_Cache::applySaved();
+		} catch (Throwable $e) {
+			fwrite(STDERR, '  cache: panel settings not applied (' . $e->getMessage() . ")\n");
+		}
 		Q_WebServer_Cache::init();
 		// Q.web.cache.components.enabled was read by nothing: init() was never
 		// called, so the setting did nothing and the layer stayed off.
@@ -2908,7 +2917,9 @@ class Q_WebServer
 		// is the ACME challenge, which is answered from a store of its own and
 		// must work even when the cache is confused.
 		if ($method === 'GET' or $method === 'HEAD') {
-			$cached = Q_WebServer_Cache::get($parsed);
+			// A HEAD is answered from the GET's entry, headers only: without
+			// this it went to a worker and rendered the page to throw it away.
+			$cached = Q_WebServer_Cache::get($parsed, true);
 			if ($cached) {
 				$fresh = Q_WebServer_Cache::notModified($cached, $parsed['headers']);
 				if ($fresh !== null) $cached = $fresh;
@@ -2917,7 +2928,7 @@ class Q_WebServer
 				self::sendResponse($client, $cached['status'],
 					$cached['body'],
 					$cached['headers']['Content-Type'] ?? 'text/html',
-					$cached['headers']);
+					$cached['headers'], $method === 'HEAD');
 				return false;
 			}
 		}
@@ -4294,9 +4305,11 @@ WORKER;
 		// the entry so later gzip-capable clients got the uncompressed body --
 		// and in the reverse order a client that cannot decompress received
 		// gzipped bytes, which it has no way to read.
-		$aeRaw = strtolower($reqHeaders['accept-encoding'] ?? '');
-		$encKey = strpos($aeRaw, 'br') !== false ? 'br'
-			: (strpos($aeRaw, 'gzip') !== false ? 'gzip' : 'id');
+		// Read as findPreCompressed() and Precompress::serve() read it, so the
+		// key names the coding actually sent; q=0 refuses a coding.
+		$aeRaw = (string) ($reqHeaders['accept-encoding'] ?? '');
+		$encKey = Q_WebServer_Headers::acceptsCoding($aeRaw, 'br') ? 'br'
+			: (Q_WebServer_Headers::acceptsCoding($aeRaw, 'gzip') ? 'gzip' : 'id');
 		$cacheKey = $fsPath . '|' . $encKey;
 
 		// The domain's HSTS header is part of the stored response, so it is
@@ -4327,6 +4340,14 @@ WORKER;
 		}
 
 		if (isset(self::$fileCache[$cacheKey])) {
+			// Most recently used goes last, so eviction, which takes from the
+			// front, drops the file asked for longest ago.
+			if (array_key_last(self::$fileCache) !== $cacheKey) {
+				$entry = self::$fileCache[$cacheKey];
+				unset(self::$fileCache[$cacheKey]);
+				self::$fileCache[$cacheKey] = $entry;
+				unset($entry);
+			}
 			$cached = &self::$fileCache[$cacheKey];
 			$etag = $cached['etag'];
 
@@ -4502,9 +4523,12 @@ WORKER;
 		$headStr = $keepAlive ? $kaHead : $clHead;
 		self::writeAll($client, $method === 'HEAD' ? $headStr : $headStr . $body);
 
-		// Cache if small enough
+		// Cache if small enough, making room by evicting the least recently
+		// used. The test used to be "fits in what is left", which refused every
+		// file once the cache was full, so the eviction below never ran and
+		// whichever files were asked for first stayed in memory for good.
 		if ($size <= self::$fileCacheMaxFile
-			&& self::$fileCacheSize + $size * 2 < self::$fileCacheMaxSize
+			&& $size * 2 <= self::$fileCacheMaxSize
 		) {
 			self::$fileCache[$cacheKey] = array(
 				'mtime'   => $mtime,
@@ -4516,7 +4540,7 @@ WORKER;
 			);
 			self::$fileCacheSize += $size * 2;
 
-			// Evict oldest if over limit
+			// Evict least recently used until under the limit
 			while (self::$fileCacheSize > self::$fileCacheMaxSize && self::$fileCache) {
 				$evict = array_key_first(self::$fileCache);
 				self::$fileCacheSize -= self::$fileCache[$evict]['bodyLen'] * 2;
@@ -5702,7 +5726,7 @@ WORKER;
 		return ($keepAlive && $status < 500) ? 'keep-alive' : 'close';
 	}
 
-	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
+	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array(), $headOnly = false)
 	{
 		static $reasons = array(
 			200=>'OK', 301=>'Moved Permanently', 302=>'Found', 304=>'Not Modified',
@@ -5753,7 +5777,9 @@ WORKER;
 			$status, $reasons[$status] ?? 'OK',
 			$type, strlen($body), $conn, $extra
 		);
-		self::writeAll($client, $out . "\r\n" . $body);
+		// A HEAD gets the headers a GET would, Content-Length included, and
+		// no body.
+		self::writeAll($client, $out . "\r\n" . ($headOnly ? '' : $body));
 	}
 
 	/**

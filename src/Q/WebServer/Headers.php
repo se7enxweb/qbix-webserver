@@ -343,10 +343,10 @@ class Q_WebServer_Headers
 	 */
 	static function findPreCompressed($fsPath, $requestHeaders)
 	{
-		$accept = strtolower($requestHeaders['accept-encoding'] ?? '');
+		$accept = (string) ($requestHeaders['accept-encoding'] ?? '');
 
-		// Prefer brotli over gzip
-		if (strpos($accept, 'br') !== false) {
+		// Prefer brotli over gzip; a coding refused with q=0 is not offered.
+		if (self::acceptsCoding($accept, 'br')) {
 			$brPath = $fsPath . '.br';
 			if (file_exists($brPath)) {
 				clearstatcache(true, $brPath);
@@ -361,7 +361,7 @@ class Q_WebServer_Headers
 			}
 		}
 
-		if (strpos($accept, 'gzip') !== false) {
+		if (self::acceptsCoding($accept, 'gzip')) {
 			$gzPath = $fsPath . '.gz';
 			if (file_exists($gzPath)) {
 				clearstatcache(true, $gzPath);
