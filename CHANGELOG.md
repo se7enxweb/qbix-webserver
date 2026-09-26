@@ -67,7 +67,41 @@ edited down to what a reader actually needs.
 
 ## Unreleased
 
-Nothing yet.
+### Upgrading from v0.0.4.27
+
+- **The control panel's credentials and sessions moved, and are trusted only
+  when no one else can change them.** With a configuration tree they live in
+  `<conf>/acl/panel.json` and `<state>/sessions/`; without one, in `local/`
+  beside the application as before. An existing password is carried over on the
+  first start (the old file is kept, renamed). Every directory from the store up
+  to `/` must belong to root or the server's user and not be writable by group
+  or others; otherwise the panel is locked. The common case after an upgrade is
+  an application directory left `0775` by a umask of `002`: the refusal, the
+  start-up log and `qbixctl panel:check` now name that directory and the fix
+  (`chmod g-w,o-w <dir>`), or set `Q.panel.aclDir` / `Q.panel.sessionsDir` (or
+  start with `--conf-dir`) to keep the panel's files elsewhere. See
+  `docs/dashboard.md`.
+- **The access log's default format is now `vhost`:** the `qbix` format plus the
+  host name, in quotes, at the end of each line. A log reader anchored at the end
+  of the line (fail2ban, a GoAccess custom format) needs updating, or set
+  `"Q": {"web": {"log": {"format": "qbix"}}}` to keep the old lines.
+
+### Fixed
+
+- **The shell works from the phar, the deb/rpm packages, the container image and
+  the static binaries.** Its runner and the console tools were never in the phar,
+  so every command answered "the shell runner (qshell.php) is missing" -- as a
+  `429` the console showed as "too many jobs". They are embedded now and started
+  through the phar (`--qshell`, `--qconsole`); `server status`, `server reload`
+  and the other server commands run from the phar too. A missing runner answers
+  `503` with the reason.
+
+### Updated
+
+- **The `iopoll` event loop is opt-in.** `auto` chooses Revolt when it is
+  installed, else `stream_select`, as v0.0.4.27 did; `iopoll` runs only when
+  asked for (`QBIX_EVENT_LOOP` or `Q.webserver.eventLoop`), until it has been
+  tested against the real `Io\Poll`.
 
 ---
 
