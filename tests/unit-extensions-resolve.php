@@ -160,7 +160,9 @@ $fw = $X::resolve('full', 'windows-x64', '8.3');
 check('full on Windows leaves out yac, which breaks redis\' igbinary detection there', isset($fw['exclude']['yac']), true);
 check('...and xlswriter, whose Windows patch no longer applies', isset($fw['exclude']['xlswriter']), true);
 check('...and ds, whose Windows build points at a missing source file', isset($fw['exclude']['ds']), true);
-check('...and gmssl, which builds but never registers in php.exe there', isset($fw['exclude']['gmssl']), true);
+foreach (array('linux-x86_64', 'linux-aarch64', 'macos-arm64', 'windows-x64') as $p) {
+	check("full leaves out gmssl on $p: it builds but never registers in the static PHP", isset($X::resolve('full', $p, '8.3')['exclude']['gmssl']), true);
+}
 check('...and xz, which builds but never registers in php.exe there', isset($fw['exclude']['xz']), true);
 check('full on linux-aarch64 leaves out yac, which finds no atomic CAS there', isset($X::resolve('full', 'linux-aarch64', '8.3')['exclude']['yac']), true);
 check('...and so does full on macos-arm64', isset($X::resolve('full', 'macos-arm64', '8.3')['exclude']['yac']), true);

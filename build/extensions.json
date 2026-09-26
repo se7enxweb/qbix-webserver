@@ -455,7 +455,10 @@
                 "gmssl"
             ],
             "unavailable": {
-                "windows-x64": "On Windows, the gmssl library builds but the extension is never registered in php.exe (\"php --ri gmssl\" returns 1), so static-php-cli's sanity check fails the whole build"
+                "linux-x86_64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1, seen on linux-aarch64 and windows-x64), so static-php-cli's sanity check fails the whole build",
+                "linux-aarch64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1, seen on linux-aarch64 and windows-x64), so static-php-cli's sanity check fails the whole build",
+                "macos-arm64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1, seen on linux-aarch64 and windows-x64), so static-php-cli's sanity check fails the whole build",
+                "windows-x64": "The gmssl library builds, but the extension is never registered in the static PHP (\"php --ri gmssl\" returns 1, seen on linux-aarch64 and windows-x64), so static-php-cli's sanity check fails the whole build"
             }
         },
         "grpc": {
