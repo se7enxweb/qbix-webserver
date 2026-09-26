@@ -75,6 +75,18 @@ if (is_dir($designsDir)) {
 	}
 }
 
+// Add docs/*.md and README.md so the built-in viewer at /Q/docs works from the
+// phar (Q_WebServer serves docs from serverDir/docs, which is inside the phar).
+if (is_dir(__DIR__ . '/docs')) {
+	foreach (glob(__DIR__ . '/docs/*.md') as $doc) {
+		if (basename($doc) === 'outreach.md') continue; // internal notes, never shipped
+		$phar->addFile($doc, 'docs/' . basename($doc));
+	}
+}
+if (is_file(__DIR__ . '/README.md')) {
+	$phar->addFile(__DIR__ . '/README.md', 'README.md');
+}
+
 // Stamp the build: the short commit and the date it was built. Inside a phar
 // there is no git to ask at runtime, so it is recorded now, at build time, and
 // bundled. From source the server falls back to asking git directly.
