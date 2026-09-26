@@ -19,7 +19,7 @@ class Q_WebServer_Shell_Builtins
 		'help' => array('[command]', 'This overview, or one command\'s usage'),
 		'man' => array('<command> | <noun> | <subject> | -k <word>', 'Manual pages: commands, nouns, built-ins and subjects (man shell to begin)'),
 		'apropos' => array('<word>', 'Every manual page that mentions a word (the same as man -k)'),
-		'history' => array('[-c] [count]', 'Recent commands; -c clears. Recall with !!, !n, !-n, !prefix, ^old^new'),
+		'history' => array('[-c | -a | count]', 'Recent commands (20; all of them into a pipe or with -a); -c clears. Recall with !!, !n, !-n, !prefix, ^old^new'),
 		'alias' => array('[name[=text]]', 'List aliases, show one, or define one (kept per user)'),
 		'unalias' => array('<name>', 'Remove an alias'),
 		'get' => array('[all|name,...] [-H] [-p] [-j] [-o name,value,source,applies]', 'Server settings, zfs-style, with where each value comes from'),
@@ -180,10 +180,20 @@ class Q_WebServer_Shell_Builtins
 	{
 		$h = $this->shell->history;
 		if ($a && $a[0] === '-c') { $h->clear(); return 0; }
-		$lines = $h->lines();
-		$count = ($a && ctype_digit($a[0])) ? (int) $a[0] : 20;
-		$start = max(0, count($lines) - $count);
-		for ($i = $start; $i < count($lines); $i++) $sink->write(sprintf("%5d  %s\n", $i + 1, $lines[$i]));
+		if ($a && $a[0] !== '-a' && !ctype_digit($a[0])) { $sink->error("history: usage: history [-c | -a | count]\n"); return 2; }
+		// The last 20 on the terminal; everything when asked, or when the
+		// output goes on to grep, sort or the like.
+		$total = $h->count();
+		if ($a && ctype_digit($a[0])) $count = (int) $a[0];
+		elseif (($a && $a[0] === '-a') || $sink->captured()) $count = $total;
+		else $count = 20;
+		$from = max(1, $total - $count + 1);
+		for ($b = $from; $b <= $total; $b += Q_WebServer_Shell_History::PAGE_MAX) {
+			$k = min(Q_WebServer_Shell_History::PAGE_MAX, $total - $b + 1);
+			foreach ($h->page($k, $b + $k) as $e) {
+				if (!$sink->write(sprintf("%5d  %s\n", $e['n'], $e['c']))) return 0;
+			}
+		}
 		return 0;
 	}
 

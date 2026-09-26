@@ -51,7 +51,9 @@ if ($mode === 'exec') {
 	// and changes go back to it: this runner may not be able to reach them.
 	$history = array_key_exists('history', $req)
 		? Q_WebServer_Shell_History::remote((array) $req['history'], (array) ($req['aliases'] ?? array()),
-			(array) ($req['files'] ?? array()), function ($m) use ($io) { $io->send($m); })
+			(array) ($req['files'] ?? array()), function ($m) use ($io) { $io->send($m); },
+			isset($req['historyCount']) ? (int) $req['historyCount'] : null,
+			function ($m) use ($io) { return $io->request($m, 'hist_reply'); })
 		: null;
 	$shell = qshell_build($ctx, $io, $req, $history);
 	// Everything this runner needs is loaded now, before it gives up the
@@ -110,7 +112,7 @@ $shell = qshell_build($ctx, $io, array('tier' => 'advanced', 'allowSystem' => tr
 if ($oneLine !== null) exit($shell->runLine($oneLine, false));
 fwrite(STDOUT, "Q shell -- `help` for commands, `exit` or Ctrl-D to leave\n");
 $useReadline = function_exists('readline') && function_exists('stream_isatty') && @stream_isatty(STDIN);
-if ($useReadline) foreach ($shell->history->lines() as $h) readline_add_history($h);
+if ($useReadline) foreach ($shell->history->page(Q_WebServer_Shell_History::PAGE) as $h) readline_add_history($h['c']);
 while (true) {
 	$prompt = 'qsh' . (isset($shell->context['site']) ? ':' . $shell->context['site'] : '') . ($shell->status ? ' [' . $shell->status . ']' : '') . '> ';
 	$line = $useReadline ? readline($prompt) : (fwrite(STDOUT, $prompt) ? fgets(STDIN) : false);

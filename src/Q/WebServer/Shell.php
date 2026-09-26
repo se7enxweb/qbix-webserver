@@ -40,7 +40,8 @@ class Q_WebServer_Shell
 	static function config($name)
 	{
 		$defaults = array('enabled' => true, 'allowSystem' => false, 'tier' => 'advanced', 'timeout' => 120,
-			'toggleKey' => '`', 'scriptsDir' => null, 'maxOutput' => 8388608, 'maxJobs' => 8, 'elevateMinutes' => 5, 'user' => null, 'allowRoot' => false, 'allowedOrigins' => array());
+			'toggleKey' => '`', 'scriptsDir' => null, 'maxOutput' => 8388608, 'maxJobs' => 8, 'elevateMinutes' => 5, 'user' => null, 'allowRoot' => false, 'allowedOrigins' => array(),
+			'historySize' => 100000);
 		$v = class_exists('Q_Config', false) ? Q_Config::get('Q', 'shell', $name, $defaults[$name] ?? null) : ($defaults[$name] ?? null);
 		if ($name === 'tier' && !isset(Q_WebServer_Shell_Interpreter::TIERS[$v])) $v = 'basic';
 		if ($name === 'toggleKey' && (!is_string($v) || $v === '' || strlen($v) > 12)) $v = '`';
@@ -155,7 +156,7 @@ class Q_WebServer_Shell
 				if ($srcTime > $dstTime) list($a, $b) = array($b, $a);
 				$lines = array();
 				foreach (array_merge($a, $b) as $l) if (!$lines or end($lines) !== $l) $lines[] = $l;
-				$lines = array_slice($lines, -Q_WebServer_Shell_History::MAX);
+				if (Q_WebServer_Shell_History::limit() > 0) $lines = array_slice($lines, -Q_WebServer_Shell_History::limit());
 				$out = $lines ? implode("\n", $lines) . "\n" : '';
 			} elseif ($name === 'aliases.json') {
 				$a = json_decode($text, true);

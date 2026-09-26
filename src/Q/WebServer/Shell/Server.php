@@ -235,6 +235,7 @@ class Q_WebServer_Shell_Server
 			'allowRoot' => Q_WebServer_Shell::rootAllowed(),
 			'runsAs' => $asRoot ? 'root' : $user['name'],
 			'history' => self::historyFor(),
+			'historyCount' => (new Q_WebServer_Shell_History(Q_WebServer_Shell::dataDir()))->count(),
 			'aliases' => (object) (new Q_WebServer_Shell_History(Q_WebServer_Shell::dataDir()))->aliases(),
 			'files' => (object) Q_WebServer_Shell_History::scriptsIn(Q_WebServer_Shell::dataDir()),
 			'vars' => (object) $s['vars'], 'exported' => $s['exported'], 'context' => (object) $s['context'], 'status' => $s['status'],
@@ -416,6 +417,12 @@ class Q_WebServer_Shell_Server
 				if ($m['t'] === 'hist') $h->add((string) ($m['d'] ?? ''));
 				elseif ($m['t'] === 'hist_clear') $h->clear();
 				elseif (preg_match('/^[A-Za-z0-9_.:-]+$/', (string) ($m['name'] ?? ''))) $h->setAlias((string) $m['name'], isset($m['text']) ? (string) $m['text'] : null);
+				return;
+			case 'hist_query':
+				// History older than the page the runner was handed: history,
+				// history | grep, !n, !prefix.
+				@fwrite($j['pipes'][0], json_encode(array('t' => 'hist_reply') + self::historyQuery($m),
+					JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
 				return;
 			case 'verify':
 				// A password for sudo: checked here, where the password file is,
@@ -617,10 +624,57 @@ class Q_WebServer_Shell_Server
 	}
 
 
-	/** The latest history lines, for a runner. */
+	/** The newest history entries, for a runner. */
 	private static function historyFor()
 	{
-		return array_slice((new Q_WebServer_Shell_History(Q_WebServer_Shell::dataDir()))->lines(), -1000);
+		return (new Q_WebServer_Shell_History(Q_WebServer_Shell::dataDir()))->page(Q_WebServer_Shell_History::PAGE);
+	}
+
+	/**
+	 * Answer a question about the history: a page of it (op "page": limit,
+	 * before) or a search (op "search": q, before, limit, prefix). For a
+	 * runner, the terminal (WebSocket) and the REST API alike.
+	 * @method historyQuery
+	 * @static
+	 * @param {array} $m
+	 * @param {integer} [$maxPage] the most entries one answer may hold
+	 * @return {array} entries, total
+	 */
+	static function historyQuery(array $m, $maxPage = null)
+	{
+		$h = new Q_WebServer_Shell_History(Q_WebServer_Shell::dataDir());
+		$before = (isset($m['before']) && is_numeric($m['before'])) ? (int) $m['before'] : null;
+		if (($m['op'] ?? 'page') === 'search') {
+			$entries = $h->search((string) ($m['q'] ?? ''), $before, max(1, min(100, (int) ($m['limit'] ?? 1))), !empty($m['prefix']));
+		} else {
+			// A runner may ask for all of it (history | grep); a page for the
+			// terminal is kept small.
+			$max = $maxPage ?? max(Q_WebServer_Shell_History::limit() ?: 1000000, Q_WebServer_Shell_History::PAGE_MAX);
+			$entries = $h->page(max(1, min($max, (int) ($m['limit'] ?? Q_WebServer_Shell_History::PAGE))), $before);
+		}
+		return array('entries' => $entries, 'total' => $h->count());
+	}
+
+	/**
+	 * A page of history for the terminal: the commands, the number of the
+	 * first one, and how many there are in all.
+	 * @method historyPage
+	 * @static
+	 */
+	static function historyPage($limit = null, $before = null)
+	{
+		$r = self::historyQuery(array('op' => 'page', 'limit' => $limit ?? Q_WebServer_Shell_History::PAGE, 'before' => $before),
+			Q_WebServer_Shell_History::PAGE_MAX);
+		$lines = array();
+		foreach ($r['entries'] as $e) $lines[] = $e['c'];
+		return array('lines' => $lines, 'first' => $r['entries'] ? $r['entries'][0]['n'] : $r['total'] + 1, 'total' => $r['total']);
+	}
+
+	/** The newest entry before $before holding $q, for the terminal's Ctrl-R. */
+	static function historySearch($q, $before = null)
+	{
+		$r = self::historyQuery(array('op' => 'search', 'q' => (string) $q, 'before' => $before, 'limit' => 1));
+		return array('q' => (string) $q, 'hit' => $r['entries'] ? $r['entries'][0] : null, 'total' => $r['total']);
 	}
 	/** The context a runner gets: how the server was started, and its state now. */
 	static function context()

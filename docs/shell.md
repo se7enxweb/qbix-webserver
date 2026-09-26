@@ -51,7 +51,7 @@ string:
 | Quoting | `'literal'`, `"with $vars"`, `\x` |
 | Expansion | `$x`, `${x:-default}`, `$(command)`, `$((1 + 2))` (no eval), `a{1,2,3}` |
 | Control | `if … then … elif … else … fi`, `for x in …; do … done`, `while`, `until`, `[ … ]` / `test` |
-| History | `!!`, `!n`, `!-n`, `!prefix`, `^old^new` |
+| History | `!!`, `!n`, `!-n`, `!prefix`, `^old^new`; `history`, `history N`, `history -a`, `history -c` |
 | Scripts | `source name`, `exec name` from the shell's directory or `Q.shell.scriptsDir` |
 
 Loops stop after 10 000 rounds. `man syntax`, `man quoting` and
@@ -180,11 +180,38 @@ browser.
 | `GET jobs`, `GET jobs/<id>`, `DELETE jobs/<id>` | list, read, stop |
 | `POST elevate` | `{"password": "..."}` before a threat command |
 | `GET complete?line=...` | completion candidates |
-| `GET history`, `GET audit?limit=20` | this session's history; the latest audit entries |
+| `GET history?limit=&before=` | a page of the history: `lines`, the number of the first (`first`), `total` |
+| `GET history/search?q=&before=` | the newest entry before `before` holding `q` (`hit`: `n`, `c`, `t`) |
+| `GET audit?limit=20` | the latest audit entries |
 
 ```
 curl -s -H "Authorization: Bearer $TOKEN" -d '{"command":"uptime"}' https://host/Q/api/shell/exec
 ```
+
+### History
+
+The history lives in the shell's data directory (`<state dir>/shell/history`),
+one entry per line in zsh's extended format, `: <unix time>:0;<command>`, the
+newest last. It is only ever appended to, under a lock, so several sessions
+add to it at once without losing a line. It keeps the newest
+`Q.shell.historySize` entries (100 000 by default): the file may grow a tenth
+past that, then it is cut back in one pass, so an add costs the same at ten
+entries as at a hundred thousand. An older history file (one command per
+line) is read as it is and given times on the next add.
+
+Nothing reads the whole file to show the newest entries: they are read from
+the end. The console loads the newest 1 000; `Up` past the oldest of them
+fetches the 1 000 before, and so on back to the first. `Ctrl-R` searches the
+loaded entries first, then asks the server, which searches the whole file
+from the end (`Ctrl-R` again goes further back). A command runs with the
+newest page too, and asks the server for older entries when it needs them:
+`!5`, `!prefix`, `history 5000`, and `history | grep …`, which lists every
+entry into a pipe. On the terminal, `history` shows the last 20; `history N`
+the last N; `history -a` all; `history -c` clears it.
+
+Measured with 150 000 entries: the newest page in about 1.5 ms, a count of a
+file not seen before in about 5 ms, a search back to the oldest entry in
+about 30 ms, an add in under 0.2 ms.
 
 ### Settings reference
 
@@ -198,6 +225,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -d '{"command":"uptime"}' https://host
 | `Q.shell.elevateMinutes` | `5` | how long a password check lasts |
 | `Q.shell.timeout` | `120` | seconds per command |
 | `Q.shell.maxOutput` | `8388608` | bytes of output per command |
+| `Q.shell.historySize` | `100000` | history entries kept; `0` keeps every one |
 | `Q.shell.maxJobs` | `8` | jobs per session |
 | `Q.shell.scriptsDir` | none | directory of scripts the shell can run |
 | `Q.shell.toggleKey` | `` ` `` | the key that opens the console |

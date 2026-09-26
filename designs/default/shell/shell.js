@@ -142,7 +142,10 @@
           });
           break;
         case 'history':
-          this.api('GET', 'shell/history').then(function (j) { j.t = 'history'; j.rid = m.rid; j.session = pane && pane.key; self.dispatch(j); });
+          this.api('GET', 'shell/history' + (m.before ? '?before=' + m.before + '&limit=' + (m.limit || 1000) : '')).then(function (j) { j.t = 'history'; j.rid = m.rid; j.session = pane && pane.key; self.dispatch(j); });
+          break;
+        case 'hsearch':
+          this.api('GET', 'shell/history/search?q=' + encodeURIComponent(m.q) + (m.before ? '&before=' + m.before : '')).then(function (j) { j.t = 'hsearch'; j.rid = m.rid; j.session = pane && pane.key; self.dispatch(j); });
           break;
       }
     },
@@ -221,7 +224,9 @@
     this.job = null;           // the foreground job id
     this.waiting = [];         // job ids "wait" is waiting for
     this.prompting = null;     // {id, secret}
-    this.history = [];
+    this.history = [];         // the newest commands; older pages load on demand
+    this.histFirst = 1;        // the number of history[0] on the server
+    this.olderRid = null;      // a page of older commands on its way
     this.hpos = -1;
     this.draft = '';
     this.kill = [];
@@ -308,7 +313,27 @@
         this.renderPrompt();
         break;
       case 'history':
-        if (m.lines) this.history = m.lines.slice();
+        if (!m.lines) break;
+        if (m.rid && m.rid === this.olderRid) {
+          // An older page, for Up past the oldest command loaded.
+          var older = m.lines.slice(0, Math.max(0, this.histFirst - (m.first || 1)));
+          this.history = older.concat(this.history);
+          if (this.hpos !== -1) this.hpos += older.length;
+          this.histFirst = older.length ? m.first : 1;
+          this.olderRid = null;
+          var after = this.afterOlder; this.afterOlder = null;
+          if (after && older.length) after();
+        } else {
+          this.history = m.lines.slice();
+          this.histFirst = m.first || 1;
+        }
+        break;
+      case 'hsearch':
+        var sr = this.search;
+        if (!sr || m.rid !== sr.rid) break;
+        sr.rid = null;
+        if (m.hit) { sr.remote = m.hit.n; sr.idx = -1; this.input.value = m.hit.c; }
+        this.showSearch(!m.hit);
         break;
       case 'start':
         if (m.quiet) break;
@@ -441,35 +466,57 @@
     if (Shell.sticky.ctrl && (done || k.length === 1)) Shell.setSticky(false);
   };
   Pane.prototype.hist = function (dir) {
+    var self = this;
     if (!this.history.length) return;
     if (this.hpos === -1) { if (dir > 0) return; this.draft = this.input.value; this.hpos = this.history.length; }
+    if (dir < 0 && this.hpos === 0) { this.loadOlder(function () { self.hist(-1); }); return; }
     this.hpos = Math.max(0, Math.min(this.history.length, this.hpos + dir));
     var v = this.hpos === this.history.length ? this.draft : this.history[this.hpos];
     if (this.hpos === this.history.length) this.hpos = -1;
     this.input.value = v; this.input.setSelectionRange(v.length, v.length);
   };
-  // Ctrl-R: incremental reverse search through the history.
-  Pane.prototype.startSearch = function () { this.search = { q: '', idx: this.history.length }; this.showSearch(); };
-  Pane.prototype.showSearch = function () {
+  // The page of commands before the oldest loaded, then cb.
+  Pane.prototype.loadOlder = function (cb) {
+    if (this.histFirst <= 1 || this.olderRid) return;
+    this.olderRid = rid();
+    this.afterOlder = cb;
+    Link.send({ t: 'history', rid: this.olderRid, pane: this.id, session: this.clientId, before: this.histFirst, limit: 1000 });
+  };
+  // Ctrl-R: incremental reverse search through the history: the commands
+  // loaded here first, then the server's, which has all of them.
+  Pane.prototype.startSearch = function () { this.search = { q: '', idx: this.history.length, remote: null, rid: null }; this.showSearch(); };
+  Pane.prototype.showSearch = function (failed) {
     this.searchEl.hidden = !this.search;
-    if (this.search) this.searchEl.textContent = "(reverse-i-search)'" + this.search.q + "': ";
+    if (this.search) this.searchEl.textContent = '(' + (failed ? 'failing ' : '') + "reverse-i-search)'" + this.search.q + "': ";
+  };
+  Pane.prototype.searchServer = function (before) {
+    var sr = this.search;
+    if (!sr || before <= 1) { this.showSearch(true); return; }
+    sr.rid = rid();
+    Link.send({ t: 'hsearch', rid: sr.rid, q: sr.q, before: before, pane: this.id, session: this.clientId });
   };
   Pane.prototype.searchKey = function (e) {
     var sr = this.search, k = e.key;
     if (k === 'Escape' || (e.ctrlKey && k === 'g')) { this.search = null; this.showSearch(); e.preventDefault(); return true; }
     if (k === 'Enter') { this.search = null; this.showSearch(); return false; }
-    if (e.ctrlKey && k === 'r') { this.findBack(sr.idx - 1); e.preventDefault(); return true; }
-    if (k === 'Backspace') { sr.q = sr.q.slice(0, -1); this.findBack(this.history.length - 1); e.preventDefault(); return true; }
-    if (k.length === 1 && !e.ctrlKey && !e.metaKey) { sr.q += k; this.findBack(Math.min(sr.idx, this.history.length - 1)); e.preventDefault(); return true; }
+    if (e.ctrlKey && k === 'r') { if (sr.remote !== null) this.searchServer(sr.remote); else this.findBack(sr.idx - 1); e.preventDefault(); return true; }
+    if (k === 'Backspace') { sr.q = sr.q.slice(0, -1); sr.remote = null; this.findBack(this.history.length - 1); e.preventDefault(); return true; }
+    if (k.length === 1 && !e.ctrlKey && !e.metaKey) {
+      sr.q += k;
+      // A match found on the server may still match: look from it, inclusive.
+      if (sr.remote !== null) this.searchServer(sr.remote + 1); else this.findBack(Math.min(sr.idx, this.history.length - 1));
+      e.preventDefault(); return true;
+    }
     if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Tab') { this.search = null; this.showSearch(); return false; }
     return false;
   };
   Pane.prototype.findBack = function (from) {
     var sr = this.search;
     for (var i = from; i >= 0; i--) {
-      if (this.history[i] && this.history[i].indexOf(sr.q) !== -1) { sr.idx = i; this.input.value = this.history[i]; this.showSearch(); return; }
+      if (this.history[i] && this.history[i].indexOf(sr.q) !== -1) { sr.idx = i; sr.remote = null; this.input.value = this.history[i]; this.showSearch(); return; }
     }
-    this.showSearch();
+    // Not among the commands loaded here: ask for the older ones.
+    this.searchServer(this.histFirst);
   };
   // Tab completion, from the server.
   Pane.prototype.complete = function () {

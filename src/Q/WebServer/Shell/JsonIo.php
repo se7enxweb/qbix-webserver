@@ -23,6 +23,9 @@ class Q_WebServer_Shell_JsonIo extends Q_WebServer_Shell_Io
 	private $outStream;
 	private $interactive;
 
+	/** @var array messages read from stdin while waiting for another */
+	private $pending = array();
+
 	function __construct($in = null, $out = null, $interactive = true)
 	{
 		$this->in = $in ?: STDIN;
@@ -49,23 +52,41 @@ class Q_WebServer_Shell_JsonIo extends Q_WebServer_Shell_Io
 	 */
 	function verify($password)
 	{
-		$this->send(array('t' => 'verify', 'd' => (string) $password));
+		$m = $this->request(array('t' => 'verify', 'd' => (string) $password), 'verified');
+		if ($m === null) return array(false, 0, 'the server did not answer');
+		return array(!empty($m['ok']), (int) ($m['until'] ?? 0), isset($m['error']) ? (string) $m['error'] : null);
+	}
+
+	/**
+	 * Send a message and wait for the server's answer of type $type. What
+	 * else arrives meanwhile (the visitor's typing) is kept for later.
+	 * @method request
+	 * @return {array|null} the answer, or null when the server has gone
+	 */
+	function request(array $message, $type)
+	{
+		$this->send($message);
+		return $this->next($type);
+	}
+
+	/** The next message of $type from stdin: a kept one first. */
+	private function next($type)
+	{
+		foreach ($this->pending as $i => $m) {
+			if (($m['t'] ?? '') === $type) { array_splice($this->pending, $i, 1); return $m; }
+		}
 		while (($line = fgets($this->in)) !== false) {
 			$m = json_decode($line, true);
-			if (is_array($m) && ($m['t'] ?? '') === 'verified') {
-				return array(!empty($m['ok']), (int) ($m['until'] ?? 0), isset($m['error']) ? (string) $m['error'] : null);
-			}
+			if (!is_array($m)) continue;
+			if (($m['t'] ?? '') === $type) return $m;
+			if (count($this->pending) < 1000) $this->pending[] = $m;
 		}
-		return array(false, 0, 'the server did not answer');
+		return null;
 	}
 	function prompt($question, $secret = false)
 	{
 		if (!$this->interactive) return null;
-		$this->send(array('t' => 'prompt', 'd' => (string) $question, 'secret' => (bool) $secret));
-		while (($line = fgets($this->in)) !== false) {
-			$m = json_decode($line, true);
-			if (is_array($m) && ($m['t'] ?? '') === 'stdin') return rtrim((string) ($m['d'] ?? ''), "\r\n");
-		}
-		return null;
+		$m = $this->request(array('t' => 'prompt', 'd' => (string) $question, 'secret' => (bool) $secret), 'stdin');
+		return $m === null ? null : rtrim((string) ($m['d'] ?? ''), "\r\n");
 	}
 }

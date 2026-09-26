@@ -73,4 +73,7 @@ class Q_WebServer_Shell_Sink
 	}
 
 	function io() { return $this->io; }
+
+	/** Whether the output goes into a pipe or a $(substitution), not the terminal. */
+	function captured() { return $this->capture; }
 }

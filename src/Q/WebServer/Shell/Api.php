@@ -21,7 +21,8 @@
  *     GET    shell/jobs/<id>                {state, exit, duration, stdout, stderr}
  *     DELETE shell/jobs/<id>                kill it
  *     GET    shell/complete?session=S&line=..&pos=N
- *     GET    shell/history
+ *     GET    shell/history          ?limit=&before=  a page: lines, first, total
+ *     GET    shell/history/search   ?q=&before=      the newest match before: hit
  *     GET    shell/audit?limit=N
  *
  * The HTTP routes take the session token only from a header (Authorization:
@@ -117,8 +118,12 @@ class Q_WebServer_Shell_Api
 			return array(200, Q_WebServer_Shell_Server::complete($key, (string) ($q['line'] ?? ''), (int) ($q['pos'] ?? strlen((string) ($q['line'] ?? '')))));
 		}
 		if ($sub === 'history' && $method === 'GET') {
-			$h = new Q_WebServer_Shell_History(Q_WebServer_Shell::dataDir());
-			return array(200, array('lines' => array_slice($h->lines(), -500)));
+			return array(200, Q_WebServer_Shell_Server::historyPage(isset($q['limit']) ? (int) $q['limit'] : null,
+				(isset($q['before']) && is_numeric($q['before'])) ? (int) $q['before'] : null));
+		}
+		if ($sub === 'history/search' && $method === 'GET') {
+			return array(200, Q_WebServer_Shell_Server::historySearch((string) ($q['q'] ?? ''),
+				(isset($q['before']) && is_numeric($q['before'])) ? (int) $q['before'] : null));
 		}
 		if ($sub === 'audit' && $method === 'GET') {
 			return array(200, array('entries' => Q_WebServer_Shell_Server::recentAudit(max(1, min(50, (int) ($q['limit'] ?? 20))))));
@@ -227,8 +232,15 @@ class Q_WebServer_Shell_Api
 				return;
 			case 'history':
 				$key = Q_WebServer_Shell_Server::session($token, (string) ($m['session'] ?? ''), $ip);
-				$h = new Q_WebServer_Shell_History(Q_WebServer_Shell::dataDir());
-				Q_WebSocket::send($sk, array('t' => 'history', 'rid' => $m['rid'] ?? null, 'session' => $key, 'lines' => array_slice($h->lines(), -500)));
+				Q_WebSocket::send($sk, array('t' => 'history', 'rid' => $m['rid'] ?? null, 'session' => $key)
+					+ Q_WebServer_Shell_Server::historyPage(isset($m['limit']) ? (int) $m['limit'] : null,
+						(isset($m['before']) && is_numeric($m['before'])) ? (int) $m['before'] : null));
+				return;
+			case 'hsearch':
+				$key = Q_WebServer_Shell_Server::session($token, (string) ($m['session'] ?? ''), $ip);
+				Q_WebSocket::send($sk, array('t' => 'hsearch', 'rid' => $m['rid'] ?? null, 'session' => $key)
+					+ Q_WebServer_Shell_Server::historySearch((string) ($m['q'] ?? ''),
+						(isset($m['before']) && is_numeric($m['before'])) ? (int) $m['before'] : null));
 				return;
 		}
 	}
