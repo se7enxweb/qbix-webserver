@@ -453,7 +453,10 @@
             "spc": "gmssl",
             "libs": [
                 "gmssl"
-            ]
+            ],
+            "unavailable": {
+                "windows-x64": "On Windows, the gmssl library builds but the extension is never registered in php.exe (\"php --ri gmssl\" returns 1), so static-php-cli's sanity check fails the whole build"
+            }
         },
         "grpc": {
             "tier": "extra",
