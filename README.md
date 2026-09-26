@@ -42,7 +42,7 @@ need to actually run it in production:
 - **Built to stay up.** A worker pool that sizes itself to available RAM, a
   design where a worker dying never fails a request, correct TLS shutdown from
   forked workers, and safe operation under opcache.
-- **No stuck connections from a growing pool.** With `Q.webserver.zygote`, workers
+- **No stuck connections from a growing pool.** With the zygote (on by default), workers
   forked under load come from a process that never held a visitor's connection,
   so none is kept open in `CLOSE-WAIT` by a worker; honest `Connection` headers at
   the keep-alive limit; and file facts remembered per request (optionally a little

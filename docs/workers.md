@@ -122,7 +122,7 @@ same deadline.
 
 **Requirements.** PHP's `sockets` extension with `SCM_RIGHTS`, plus `pcntl` and
 `posix`, all present in the Linux builds. Without them the setting is ignored and
-workers are forked from the server. It is off by default. In Exponential it is
+workers are forked from the server. It is on by default; set it `false` to fork every worker from the server as before. In Exponential it is
 set from `velocity.ini`:
 
 ```ini
@@ -229,7 +229,7 @@ Every setting, with its default. All are under `Q.webserver`.
 | `requestTimeout` | `30` | Seconds a request may run before the client gets `504` and the worker is replaced. `0` means no limit. |
 | `workerMemoryCeiling` | `256`, or ¾ of `memory_limit` if lower | Heap size in MB past which a worker is replaced. `0` turns it off. |
 | `forkPerRequest` | `false` | One request per worker, then a fresh fork. |
-| `zygote` | `false` | Fork workers started after the pool from a zygote, so they inherit no visitor's connection. See [Forking from a zygote](#forking-from-a-zygote). |
+| `zygote` | `true` | Fork workers started after the pool from a zygote, so they inherit no visitor's connection. `false` forks them from the server as before. See [Forking from a zygote](#forking-from-a-zygote). |
 | `warmup` | — | A script run once in the parent before the workers are forked. See [reset.md](reset.md#warming-the-pool-in-the-parent-and-the-one-trap-in-it). |
 | `keepGlobals` | `[]` | Globals a worker keeps between requests. `--keep-globals` sets it too. |
 | `maxConnections` | `1024` | Connections open at once; beyond it the server answers `503`. |

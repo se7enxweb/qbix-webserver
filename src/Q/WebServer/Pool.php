@@ -234,7 +234,7 @@ class Q_WebServer_Pool
 	 * workers only, until those workers were retired. Forked from the
 	 * zygote, which never held a client connection, a worker inherits none.
 	 *
-	 * Q.webserver.zygote turns it on (off by default); without ext-sockets'
+	 * Q.webserver.zygote (on by default; false forks from the server as before); without ext-sockets'
 	 * SCM_RIGHTS, or if the zygote fails, workers are forked from the server
 	 * as before.
 	 *
@@ -451,7 +451,7 @@ class Q_WebServer_Pool
 		}
 		// Still before the first connection is accepted: the zygote forked
 		// now holds no client, and neither will any worker it forks.
-		if (Q_Config::get('Q', 'webserver', 'zygote', false) and self::zygoteSupported()) {
+		if (Q_Config::get('Q', 'webserver', 'zygote', true) and self::zygoteSupported()) {
 			$this->startZygote();
 		}
 		$pool = $this;
@@ -688,6 +688,10 @@ class Q_WebServer_Pool
 	 */
 	protected static function zygoteMain($ctl, $octane, $maxReqs)
 	{
+		// Named, so `ps` (and a test) can tell it from the workers. Each
+		// worker it forks puts the server's own command line back.
+		$title = implode(' ', (array) ($_SERVER['argv'] ?? array()));
+		if (function_exists('cli_set_process_title')) @cli_set_process_title('qbixserver: zygote');
 		if (function_exists('pcntl_async_signals')) pcntl_async_signals(true);
 		if (function_exists('pcntl_signal')) {
 			// Not restarting the interrupted call ($restart_syscalls false):
@@ -728,6 +732,7 @@ class Q_WebServer_Pool
 			if ($pid === 0) {
 				// ── WORKER, forked from the zygote ──
 				socket_close($ctl);
+				if ($title !== '' and function_exists('cli_set_process_title')) @cli_set_process_title($title);
 				if (function_exists('pcntl_signal')) {
 					pcntl_signal(SIGCHLD, SIG_DFL);
 					pcntl_signal(SIGTERM, SIG_DFL);

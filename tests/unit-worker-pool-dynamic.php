@@ -105,7 +105,13 @@ function startServer($name, $workers, $config, &$servers)
 	return array($port, (int) $st['pid']);
 }
 
-/** Children of $pid by state letter, e.g. array('S' => 3, 'Z' => 0). */
+/** Whether $pid is the pool's zygote (it names itself "qbixserver: zygote"). */
+function isZygote($pid)
+{
+	return strpos((string) @file_get_contents("/proc/$pid/cmdline"), 'qbixserver: zygote') !== false;
+}
+
+/** Workers of $pid by state letter, e.g. array('S' => 3, 'Z' => 0). */
 function children($pid)
 {
 	$by = array('all' => 0, 'Z' => 0);
@@ -115,6 +121,13 @@ function children($pid)
 		$rest = substr($s, strrpos($s, ')') + 2);
 		$bits = explode(' ', $rest);
 		if ((int) $bits[1] !== $pid) continue;
+		$c = (int) basename(dirname($f));
+		if (isZygote($c)) {
+			// workers are forked by the zygote once there is one
+			$z = children($c);
+			$by['all'] += $z['all']; $by['Z'] += $z['Z'];
+			continue;
+		}
 		++$by['all'];
 		if ($bits[0] === 'Z') ++$by['Z'];
 	}
@@ -128,7 +141,9 @@ function childPids($pid)
 		$s = @file_get_contents($f);
 		if ($s === false) continue;
 		$bits = explode(' ', substr($s, strrpos($s, ')') + 2));
-		if ((int) $bits[1] === $pid and $bits[0] !== 'Z') $out[] = (int) basename(dirname($f));
+		if ((int) $bits[1] !== $pid or $bits[0] === 'Z') continue;
+		$c = (int) basename(dirname($f));
+		if (isZygote($c)) $out = array_merge($out, childPids($c)); else $out[] = $c;
 	}
 	return $out;
 }

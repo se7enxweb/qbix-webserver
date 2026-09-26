@@ -120,10 +120,10 @@ function tlsBurst($port, $n, $path)
 // Every request here is in flight -- its TLS connection open in the parent --
 // while other requests make the pool fork. A fork that sent close_notify
 // would end some of them.
-$start = count(array_filter(rh_children(rh_server_pid('tls')), function ($s) { return $s !== 'Z'; }));
+$start = count(array_filter(rh_workers(rh_server_pid('tls')), function ($s) { return $s !== 'Z'; }));
 list($ok, $lost, $bad) = tlsBurst($tlsPort, 20, '/index.php?sleep=400');
 check('twenty concurrent TLS requests that make the pool fork are all answered', $ok . ' ' . json_encode(array_slice($bad, 0, 3)), '20 []');
-$live = count(array_filter(rh_children(rh_server_pid('tls')), function ($s) { return $s !== 'Z'; }));
+$live = count(array_filter(rh_workers(rh_server_pid('tls')), function ($s) { return $s !== 'Z'; }));
 check(sprintf('...and the pool did fork for them (%d -> %d workers)', $start, $live), $live > $start, true);
 
 // Workers that exit (each replaces its worker after answering) while other
