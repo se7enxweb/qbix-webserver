@@ -59,12 +59,15 @@ function freePort()
 }
 
 /** HTTP/1.1: the body, trimmed, or null. */
-function fetch1($port, $path)
+function fetch1($port, $path, $method = 'GET', array $headers = array())
 {
 	$s = @stream_socket_client("tcp://127.0.0.1:$port", $en, $es, 5);
 	if (!$s) return null;
 	stream_set_timeout($s, 10);
-	fwrite($s, "GET $path HTTP/1.1\r\nHost: 127.0.0.1:$port\r\nConnection: close\r\n\r\n");
+	$headers += array('Host' => isset($GLOBALS['cacheHost']) ? $GLOBALS['cacheHost'] : "127.0.0.1:$port");
+	$lines = '';
+	foreach ($headers as $name => $value) $lines .= "$name: $value\r\n";
+	fwrite($s, "$method $path HTTP/1.1\r\n{$lines}Connection: close\r\n\r\n");
 	$raw = '';
 	while (!feof($s)) {
 		$chunk = fread($s, 8192);
@@ -97,6 +100,9 @@ function fetch1($port, $path)
 function fetch2($port, $path)
 {
 	$ch = curl_init("https://127.0.0.1:$port$path");
+	// The path exactly as written: curl would otherwise tidy "/./" and "//"
+	// away, and those are among the paths the list must hold against.
+	if (defined('CURLOPT_PATH_AS_IS')) curl_setopt($ch, CURLOPT_PATH_AS_IS, true);
 	curl_setopt_array($ch, array(
 		CURLOPT_RETURNTRANSFER => true,
 		CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_2TLS,
@@ -131,16 +137,39 @@ $files = array(
 	'sub/index.php'      => '<?php echo "subindex";',
 	'assets/app.css'     => 'body{}',
 	'private/secret.txt' => 'secret',
+	// A script with its extension in capitals, and a precompressed sibling
+	// of the protected file: neither may be reached around the lists.
+	'lib/upper.PHP'         => '<?php echo "upper";',
+	'private/secret.txt.gz' => 'gzsecret',
+	// A page that says it may be kept, for the cache case below.
+	'lib/cached.php'        => '<?php header("Cache-Control: public, max-age=600"); echo "cachedtool";',
 );
+
+/**
+ * Ways round the lists. None may answer with an unlisted script's output or
+ * an unlisted file; the front controller, a 400 or a 404 are all fine.
+ */
+$bypasses = array(
+	'/lib/upper.PHP', '/lib/tool%2ephp', '/lib%2ftool.php', '/lib/tool%252ephp',
+	'/lib//tool.php', '/./lib/tool.php', '/lib/./tool.php', '/lib\\tool.php',
+	'/lib/tool.php;x', '/lib/tool.php.', '/lib/tool.php%20', '/lib/tool.php%00',
+	'/lib/tool.php/extra/more', '/sub/index.php', '/sub/index.php/x',
+	'/private//secret.txt', '/./private/secret.txt', '/private/./secret.txt',
+	'/private/secret.txt%00', '/private/secret.txt.gz', '/private%2fsecret.txt',
+	'/assets/%2e%2e/private/secret.txt', '/assets/..%2fprivate/secret.txt',
+	'/assets%2f..%2fprivate%2fsecret.txt', '/assets/..\\private\\secret.txt',
+	'/assets/../private/secret.txt', '/linked/../private/secret.txt',
+);
+$forbidden = array('tool', 'secret', 'upper', 'subindex', 'gzsecret', 'cachedtool');
 
 /**
  * Start a server, ask it for each path, stop it.
  *
  * @param array $expect path => the script that should answer
  */
-function run($server, $forkPerRequest, $listed, $http2, array $expect)
+function run($server, $forkPerRequest, $listed, $http2, array $expect, $cacheDir = null)
 {
-	global $files, $skipped;
+	global $files, $skipped, $bypasses, $forbidden;
 	$mode = ($forkPerRequest ? 'fresh worker per request' : 'persistent workers')
 		. ($listed ? ', scripts listed' : ', no list');
 	$base = sys_get_temp_dir() . DS . 'qbix-scripts-' . getmypid() . '-' . (int) $forkPerRequest . (int) $listed;
@@ -155,6 +184,9 @@ function run($server, $forkPerRequest, $listed, $http2, array $expect)
 	if (!$port or !$tlsPort or $port === $tlsPort) { check("$mode: free ports", 0, 1); return; }
 
 	$config = array('webserver' => array('forkPerRequest' => $forkPerRequest));
+	if ($cacheDir !== null) {
+		$config['web']['cache'] = array('enabled' => true, 'dir' => $cacheDir);
+	}
 	if ($listed) {
 		$config['webserver']['scripts'] = array('/index.php', 'rest.php');
 		$config['webserver']['frontControllers'] = array('^/api/' => 'rest.php');
@@ -210,8 +242,28 @@ function run($server, $forkPerRequest, $listed, $http2, array $expect)
 			// never answered with the file.
 			check("$mode, HTTP/1.1: dot segments do not reach an unlisted file",
 				fetch1($port, '/assets/../private/secret.txt') !== 'secret', true);
+			foreach ($bypasses as $p) {
+				check("$mode, HTTP/1.1: $p reaches nothing unlisted",
+					in_array(fetch1($port, $p), $forbidden, true), false);
+				if ($http2) {
+					check("$mode, HTTP/2: $p reaches nothing unlisted",
+						in_array(fetch2($tlsPort, $p), $forbidden, true), false);
+				}
+			}
+			// Other methods, and an encoding that would pick a precompressed copy.
+			foreach (array('HEAD', 'POST', 'OPTIONS') as $m) {
+				check("$mode, HTTP/1.1: $m /lib/tool.php reaches nothing unlisted",
+					in_array(fetch1($port, '/lib/tool.php', $m), $forbidden, true), false);
+			}
+			check("$mode, HTTP/1.1: gzip asked for, the protected file is still not sent",
+				in_array(fetch1($port, '/private/secret.txt', 'GET', array('Accept-Encoding' => 'gzip, br')), $forbidden, true), false);
+			check("$mode, HTTP/1.1: a range of the protected file is not sent",
+				in_array(fetch1($port, '/private/secret.txt', 'GET', array('Range' => 'bytes=0-3')), array('secr', 'secret'), true), false);
+			// The server's own pages are not the application's to list.
+			check("$mode, HTTP/1.1: /Q/health is still the server's",
+				strpos((string) fetch1($port, '/Q/health'), 'front') === false, true);
 		}
-		if (!$http2) $skipped['http2'] = 'no HTTP/2 in curl, or no openssl extension';
+		if (!$http2 and empty($GLOBALS['http2'])) $skipped['http2'] = 'no HTTP/2 in curl, or no openssl extension';
 	}
 
 	$st = @proc_get_status($proc);
@@ -272,6 +324,23 @@ foreach (array(false, true) as $fork) {
 	run($server, $fork, true, $http2, $listed);
 	run($server, $fork, false, $http2, $unlisted);
 }
+
+// A page stored while every script ran must not be answered once the list
+// stops the script from running: the lookup comes before the list.
+$cacheDir = sys_get_temp_dir() . DS . 'qbix-scripts-cache-' . getmypid();
+@mkdir($cacheDir, 0700, true);
+$GLOBALS['cacheHost'] = 'cache.test';
+run($server, false, false, false, array('/lib/cached.php' => 'cachedtool'), $cacheDir);
+run($server, false, false, false, array('/lib/cached.php' => 'cachedtool'), $cacheDir);
+run($server, false, true, false, array('/lib/cached.php' => 'front'), $cacheDir);
+foreach ((array) glob($cacheDir . DS . '{,.}*', GLOB_BRACE) as $f) {
+	if (is_file($f)) @unlink($f);
+}
+foreach ((array) glob($cacheDir . DS . '*', GLOB_ONLYDIR) as $d) {
+	foreach ((array) glob($d . DS . '*') as $f) @unlink($f);
+	@rmdir($d);
+}
+@rmdir($cacheDir);
 
 echo "\n";
 foreach ($skipped as $what => $why) printf("  skip  %s: %s\n", $what, $why);

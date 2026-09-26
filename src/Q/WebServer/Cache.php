@@ -239,6 +239,43 @@ class Q_WebServer_Cache
 		self::$generationFile = (string) Q::ifset($config, 'generationFile',
 			self::$dir ? self::$dir . DIRECTORY_SEPARATOR . '.generation' : '');
 		self::$generationChecked = -1;
+		self::forgetOnAccessListChange();
+	}
+
+	/**
+	 * Start a new generation when the lists that decide what may be answered
+	 * at all -- Q.webserver.scripts, Q.webserver.frontControllers and
+	 * Q.web.static.paths -- differ from those the stored entries were made
+	 * under. An entry only exists because a request once passed those checks,
+	 * and a lookup comes before them; without this, a script's cached page
+	 * or a file's stored copy would still be answered after the lists stop
+	 * allowing it, until the entry expired.
+	 *
+	 * The lists' fingerprint is kept beside the entries (.access-lists), so
+	 * a restart with unchanged lists keeps the cache.
+	 * @method forgetOnAccessListChange
+	 * @static
+	 * @return {boolean} whether a new generation was started
+	 */
+	static function forgetOnAccessListChange()
+	{
+		if (!self::$enabled or !self::$dir or self::$generationFile === '') return false;
+		$lists = array(
+			Q_Config::get('Q', 'webserver', 'scripts', null),
+			Q_Config::get('Q', 'webserver', 'frontControllers', null),
+			Q_Config::get('Q', 'web', 'static', 'paths', null),
+		);
+		$now = md5(json_encode($lists));
+		$file = self::$dir . DIRECTORY_SEPARATOR . '.access-lists';
+		$before = @file_get_contents($file);
+		if ($before === $now) return false;
+		// No record yet and no lists: nothing was ever narrowed, keep the cache.
+		$bumped = false;
+		if ($before !== false or $lists !== array(null, null, null)) {
+			$bumped = self::bumpGeneration();
+		}
+		@file_put_contents($file, $now, LOCK_EX);
+		return $bumped;
 	}
 
 	/**
