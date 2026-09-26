@@ -1503,7 +1503,10 @@
             "spc": "xz",
             "libs": [
                 "xz"
-            ]
+            ],
+            "unavailable": {
+                "windows-x64": "On Windows, the xz library builds but the extension is never registered in php.exe (\"php --ri xz\" returns 1), so static-php-cli's sanity check fails the whole build"
+            }
         },
         "yac": {
             "tier": "extra",

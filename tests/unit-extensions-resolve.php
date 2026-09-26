@@ -161,6 +161,7 @@ check('full on Windows leaves out yac, which breaks redis\' igbinary detection t
 check('...and xlswriter, whose Windows patch no longer applies', isset($fw['exclude']['xlswriter']), true);
 check('...and ds, whose Windows build points at a missing source file', isset($fw['exclude']['ds']), true);
 check('...and gmssl, which builds but never registers in php.exe there', isset($fw['exclude']['gmssl']), true);
+check('...and xz, which builds but never registers in php.exe there', isset($fw['exclude']['xz']), true);
 check('...while Linux keeps it', in_array('yac', $X::resolve('full', 'linux-x86_64', '8.3')['include'], true), true);
 check('a dynamic PHP is not held to the static exclusions (rar, on Linux)',
 	isset($X::resolve('full', 'linux-x86_64', '8.3', array(), false)['exclude']['rar']), false);
