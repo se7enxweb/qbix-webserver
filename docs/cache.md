@@ -86,7 +86,7 @@ conditional request for a cached page is answered `304 Not Modified`.
 
 ### Where it is kept
 
-Small entries are kept in APCu when it is available, and every entry is written to
+Small entries are kept in APCu when it can be used, and every entry is written to
 disk under `dir`, one file per page in a two-level directory:
 
 ```
@@ -96,7 +96,21 @@ disk under `dir`, one file per page in a two-level directory:
 ```
 
 The body is stored as it is sent: compressed with gzip when the client accepts it
-and the type is worth compressing. A scheduled sweep removes expired files every
+and the type is worth compressing.
+
+APCu is used only when it can hold entries in the server's process, which under
+the CLI means `apc.enable_cli=1`; PHP's default is off. Loaded but disabled, it
+would accept nothing and say nothing, so the server checks `apcu_enabled()` and
+says at startup when the cache is on and APCu is not doing its part:
+
+```
+  cache: APCu is loaded but disabled in this process (apc.enable_cli is off), so cached pages are read from disk. Start PHP with -d apc.enable_cli=1, or set it in php.ini.
+```
+
+It also warns when `apc.use_request_time=1` (APCu would measure lifetimes from
+the server's start, so entries expire early) and when `apcu.maxSize` is not
+smaller than `apc.shm_size`. Setting `apcu.enabled` to `false` turns APCu off
+without any warning. A scheduled sweep removes expired files every
 `sweep.every` seconds.
 
 ---
@@ -147,7 +161,7 @@ Every setting, with its default. All are under `Q.web.cache`.
 | `negativeTtl` | `0` | Seconds to keep `404` and `410` answers. `0` keeps none. |
 | `refreshHeader` | `"x-cache-refresh"` | A request header that renders and stores the page again. |
 | `generationFile` | `<dir>/.generation` | The generation marker. |
-| `apcu.enabled` | when APCu is loaded | Keep small entries in APCu as well as on disk. |
+| `apcu.enabled` | when APCu is usable | Keep small entries in APCu as well as on disk. Usable means `apcu_enabled()`, so `apc.enable_cli=1` under the CLI. `true` when it is not usable warns and stays off. |
 | `apcu.maxSize` | `65536` | Largest body, in bytes, kept in APCu. |
 | `minifyHtml` | `false` | Minify HTML before it is stored. |
 | `middleOut` | `false` | Compress stored bodies against a shared dictionary. |

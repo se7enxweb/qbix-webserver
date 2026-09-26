@@ -56,6 +56,15 @@ class Q_WebServer_Cache
 	static $hits = 0;
 	static $misses = 0;
 
+	/** @var int apcu_store() calls that failed: a full segment, or APCu unusable */
+	static $apcuStoreFailures = 0;
+
+	/** @var string[] what init() found wrong with APCu, as said on STDERR */
+	static $apcuWarnings = array();
+
+	/** @var bool whether the warnings have been said in this process */
+	private static $apcuWarned = false;
+
 	/**
 	 * How long past its expiry an entry may still be served while one request
 	 * renders a fresh one. 0 keeps the old behaviour exactly.
@@ -226,8 +235,9 @@ class Q_WebServer_Cache
 		}
 
 		$apcu = Q::ifset($config, 'apcu', array());
-		self::$apcuEnabled = (bool) Q::ifset($apcu, 'enabled', function_exists('apcu_fetch'));
 		self::$apcuMaxSize = (int) Q::ifset($apcu, 'maxSize', 65536);
+		$wanted = Q::ifset($apcu, 'enabled', null);
+		self::$apcuEnabled = self::apcuUsable($wanted === null ? null : (bool) $wanted);
 		self::$defaultTtl = (int) Q::ifset($config, 'defaultTtl', 0);
 		self::$skipCookies = Q::ifset($config, 'skip', 'cookies', array('Q_sid', 'PHPSESSID'));
 		self::$staleWhileRevalidate = (int) Q::ifset($config, 'staleWhileRevalidate', 0);
@@ -240,6 +250,83 @@ class Q_WebServer_Cache
 			self::$dir ? self::$dir . DIRECTORY_SEPARATOR . '.generation' : '');
 		self::$generationChecked = -1;
 		self::forgetOnAccessListChange();
+	}
+
+	/**
+	 * Whether APCu can hold entries in this process, and say so when it
+	 * cannot although it looks as if it could.
+	 *
+	 * function_exists('apcu_fetch') is true whenever the extension is loaded,
+	 * including under the CLI with apc.enable_cli=0 -- PHP's default. There
+	 * every store fails and every fetch misses, without an error: the cache
+	 * ran from disk while its settings said memory, and the only sign was a
+	 * throughput that halved from one machine to the next. apcu_enabled()
+	 * answers the real question.
+	 *
+	 * @method apcuUsable
+	 * @static
+	 * @param {boolean|null} $wanted Q.web.cache.apcu.enabled; null when unset
+	 * @return {boolean}
+	 */
+	static function apcuUsable($wanted)
+	{
+		$loaded = function_exists('apcu_fetch');
+		$usable = ($loaded and function_exists('apcu_enabled') and apcu_enabled());
+		$warn = array();
+		if ($wanted !== false and $loaded and !$usable) {
+			$warn[] = 'APCu is loaded but disabled in this process (apc.enable_cli is off),'
+				. ' so cached pages are read from disk. Start PHP with -d apc.enable_cli=1,'
+				. ' or set it in php.ini.';
+		}
+		if ($wanted === true and !$loaded) {
+			$warn[] = 'Q.web.cache.apcu.enabled is true but APCu is not loaded,'
+				. ' so cached pages are read from disk.';
+		}
+		if ($usable and $wanted !== false) {
+			if (ini_get('apc.use_request_time')) {
+				// The "request" of a long-running server is its whole life, so an
+				// entry stored an hour after startup with a lifetime of five
+				// minutes is already expired when it is written.
+				$warn[] = "apc.use_request_time=1 measures APCu lifetimes from the server's"
+					. ' start, so entries expire early. Set apc.use_request_time=0.';
+			}
+			$shm = self::iniBytes(ini_get('apc.shm_size'));
+			if ($shm > 0 and self::$apcuMaxSize >= $shm) {
+				$warn[] = 'Q.web.cache.apcu.maxSize (' . self::$apcuMaxSize . ' bytes) is not'
+					. ' smaller than apc.shm_size (' . $shm . ' bytes); one entry could fill it.';
+			}
+		}
+		self::$apcuWarnings = $warn;
+		if ($warn and !self::$apcuWarned) {
+			self::$apcuWarned = true;
+			foreach ($warn as $w) fwrite(STDERR, "  cache: $w\n");
+		}
+		return $wanted === null ? $usable : ($wanted and $usable);
+	}
+
+	/** "32M" -> 33554432, as PHP reads a size setting. */
+	private static function iniBytes($value)
+	{
+		$value = trim((string) $value);
+		if ($value === '') return 0;
+		$n = (int) $value;
+		switch (strtoupper(substr($value, -1))) {
+			case 'G': $n *= 1024; // fall through
+			case 'M': $n *= 1024; // fall through
+			case 'K': $n *= 1024;
+		}
+		return $n;
+	}
+
+	/**
+	 * Store in APCu, counting a refusal. A full segment, or an APCu that cannot
+	 * be used, answers false; before this nobody could tell.
+	 */
+	private static function apcuStore($key, $value, $ttl)
+	{
+		$ok = @apcu_store($key, $value, $ttl);
+		if (!$ok) self::$apcuStoreFailures++;
+		return $ok;
 	}
 
 	/**
@@ -457,7 +544,7 @@ class Q_WebServer_Cache
 			$entry['headers']['Age'] = self::age($entry);
 			if (!$fromApcu and self::$apcuEnabled
 			and strlen($entry['body']) <= self::$apcuMaxSize) {
-				apcu_store('qcache:' . $key, $entry, self::ttlRemaining($entry));
+				self::apcuStore('qcache:' . $key, $entry, self::ttlRemaining($entry));
 			}
 			return $entry;
 		}
@@ -677,7 +764,7 @@ class Q_WebServer_Cache
 
 		// Store in APCu if small enough
 		if (self::$apcuEnabled && strlen($body) <= self::$apcuMaxSize) {
-			apcu_store('qcache:' . $key, $entry, $ttl);
+			self::apcuStore('qcache:' . $key, $entry, $ttl);
 		}
 
 		// The validators, kept apart from the page they describe.
@@ -978,7 +1065,7 @@ class Q_WebServer_Cache
 		$ttl = self::ttlRemaining($entry);
 		if ($ttl <= 0) return;
 
-		apcu_store('qcache:v:' . $key, array(
+		self::apcuStore('qcache:v:' . $key, array(
 			'headers' => $headers,
 			'expires' => isset($entry['expires']) ? $entry['expires'] : 0,
 			'stored'  => isset($entry['stored']) ? (int) $entry['stored'] : time(),
