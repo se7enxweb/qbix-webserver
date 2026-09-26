@@ -43,6 +43,16 @@ $p = new Phar($phar);
 foreach (array('qshell.php', 'qbixconsole.php', 'qbixctl.php') as $f) check("the phar carries $f", isset($p[$f]), true);
 unset($p);
 
+// ── How each build starts the runner (Shell_Entry::packed) ───────────────
+if (!class_exists('Q_WebServer_Shell_Entry', false)) require_once dirname(__DIR__) . '/src/Q/WebServer/Shell/Entry.php';
+$inside = 'phar://' . $phar . '/src/Q/WebServer/Shell';
+check('from the phar under PHP: PHP, then the phar', Q_WebServer_Shell_Entry::packed($inside, '/usr/bin/php', 'cli'), array('/usr/bin/php', $phar));
+// A static binary: micro has PHP_BINARY = '' and the phar is the executable.
+check('from a static binary (micro, no PHP_BINARY): the binary alone', Q_WebServer_Shell_Entry::packed($inside, '', 'micro'), array($phar));
+check('an empty PHP_BINARY alone also means the binary', Q_WebServer_Shell_Entry::packed($inside, '', 'cli'), array($phar));
+check('the phar run as itself: the binary alone', Q_WebServer_Shell_Entry::packed($inside, $phar, 'cli'), array($phar));
+check('a real directory is not packed', Q_WebServer_Shell_Entry::packed(__DIR__, '', 'micro'), null);
+
 // ── Who runs it: never root ──────────────────────────────────────────────
 $asRoot = function_exists('posix_geteuid') && posix_geteuid() === 0;
 $user = null; $prefix = array();

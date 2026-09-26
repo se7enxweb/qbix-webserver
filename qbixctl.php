@@ -14,7 +14,7 @@
  * matching qbixconsole command; anything else is passed to qbixconsole.
  */
 
-if (PHP_SAPI !== 'cli') { exit("qbixctl runs from the command line\n"); }
+if (PHP_SAPI !== 'cli' && PHP_SAPI !== 'micro') { exit("qbixctl runs from the command line\n"); }
 $map = array(
 	'start' => 'server:start', 'stop' => 'server:stop', 'restart' => 'server:restart',
 	'graceful' => 'server:reload', 'reload' => 'server:reload', 'status' => 'server:status',

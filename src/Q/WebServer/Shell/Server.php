@@ -249,9 +249,15 @@ class Q_WebServer_Shell_Server
 		$pipes = array();
 		// Only its three pipes and a trimmed environment: none of the server's
 		// sockets or secrets reach a process that will run as another user.
-		$proc = @proc_open(array_merge($runner, array('--exec')), Q_WebServer_Shell_Exec::descriptors(array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'))),
-			$pipes, null, Q_WebServer_Shell_Exec::environment(array()));
-		if (!is_resource($proc)) return array('ok' => false, 'error' => 'could not start the shell runner');
+		try {
+			$proc = @proc_open(array_merge($runner, array('--exec')), Q_WebServer_Shell_Exec::descriptors(array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'))),
+				$pipes, null, Q_WebServer_Shell_Exec::environment(array()));
+		} catch (Throwable $e) {
+			// proc_open() throws on a malformed command (an empty program
+			// name, say): answer with the reason instead of a 500.
+			return array('ok' => false, 'status' => 503, 'error' => 'could not start the shell runner: ' . $e->getMessage());
+		}
+		if (!is_resource($proc)) return array('ok' => false, 'status' => 503, 'error' => 'could not start the shell runner');
 		Q_WebServer_Shell_Exec::closeExtra($pipes);
 		fwrite($pipes[0], json_encode($request, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n");
 		// From here on everything to the runner is queued (toRunner()): a

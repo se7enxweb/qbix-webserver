@@ -13,7 +13,7 @@
  * the engine can add its own from its register() (see --distribution).
  */
 
-if (PHP_SAPI !== 'cli') { exit("qbixconsole runs from the command line\n"); }
+if (PHP_SAPI !== 'cli' && PHP_SAPI !== 'micro') { exit("qbixconsole runs from the command line\n"); }
 if (!defined('DS')) define('DS', DIRECTORY_SEPARATOR);
 require_once __DIR__ . '/src/Q.php';
 require_once __DIR__ . '/src/Q/Console.php';

@@ -17,7 +17,7 @@
  * touching the server. See docs/shell.md.
  */
 
-if (PHP_SAPI !== 'cli') { exit("qshell runs from the command line\n"); }
+if (PHP_SAPI !== 'cli' && PHP_SAPI !== 'micro') { exit("qshell runs from the command line\n"); }
 
 // One of the engine's console commands, run by the server for a runner that
 // asked (Q_WebServer_Shell_Server::serverRun()): in a session of its own, so a

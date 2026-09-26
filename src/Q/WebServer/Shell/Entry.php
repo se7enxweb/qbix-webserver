@@ -78,9 +78,11 @@ class Q_WebServer_Shell_Entry
 	 * @method packed
 	 * @static
 	 * @param {string} $dir
+	 * @param {string} [$binary] PHP_BINARY, for tests
+	 * @param {string} [$sapi] PHP_SAPI, for tests
 	 * @return {array|null}
 	 */
-	static function packed($dir)
+	static function packed($dir, $binary = PHP_BINARY, $sapi = PHP_SAPI)
 	{
 		if (strncmp((string) $dir, 'phar://', 7) !== 0) return null;
 		$file = substr((string) $dir, 7);
@@ -91,8 +93,11 @@ class Q_WebServer_Shell_Entry
 			$file = $up;
 		}
 		if (!is_file($file)) return null;
-		$self = realpath(PHP_BINARY);
-		if ($self !== false && $self === realpath($file)) return array(PHP_BINARY);
-		return array(PHP_BINARY, $file);
+		// A static (micro) binary has no PHP_BINARY: it is the empty string
+		// there, and the phar is the executable itself.
+		if ($sapi === 'micro' || (string) $binary === '') return array($file);
+		$self = realpath($binary);
+		if ($self !== false && $self === realpath($file)) return array($binary);
+		return array($binary, $file);
 	}
 }
