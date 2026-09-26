@@ -619,8 +619,17 @@ jobs:
       - name: Build
         run: bash packaging/ci/build-packages.sh '${{ needs.plan.outputs.version }}' '${{ matrix.distro }}'
 
+      # The package was called qbix-webserver until 244d16a: built from that
+      # commit, it is installed first, then this one over it (the takeover).
+      - name: Build the package under its former name
+        run: |
+          git fetch --no-tags --depth=1 origin 244d16aa32169286e55e1a93dbb7385303d0db8a
+          git worktree add ../former 244d16aa32169286e55e1a93dbb7385303d0db8a
+          (cd ../former && bash packaging/ci/build-packages.sh 0.0.4.27 '${{ matrix.distro }}')
+          mkdir -p dist-former && cp ../former/dist/qbix-webserver* dist-former/
+
       - name: Install and check in ${{ matrix.distro }}
-        run: bash packaging/ci/test-package.sh '${{ matrix.distro }}' dist/qbix-webserver*
+        run: bash packaging/ci/test-package.sh '${{ matrix.distro }}' dist/exponential-velocity* dist-former/qbix-webserver*
 
       - name: Upload
         uses: actions/upload-artifact@v4
