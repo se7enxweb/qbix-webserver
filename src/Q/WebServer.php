@@ -291,6 +291,15 @@ class Q_WebServer
 		// Initialize dashboard stats (uptime tracking)
 		Q_WebServer_Dashboard::init();
 		Q_WebServer_Log::init();
+		// Cache settings saved in the control panel win over the configuration
+		// file: laid over Q.web.cache here, before init() reads it, so they
+		// survive a restart. Only Q.web.cache; nothing else is taken from there.
+		try {
+			if (!class_exists('Q_WebServer_Panel_Cache', false)) require_once __DIR__ . '/WebServer/Panel/Cache.php';
+			Q_WebServer_Panel_Cache::applySaved();
+		} catch (Throwable $e) {
+			fwrite(STDERR, '  cache: panel settings not applied (' . $e->getMessage() . ")\n");
+		}
 		Q_WebServer_Cache::init();
 		// Q.web.cache.components.enabled was read by nothing: init() was never
 		// called, so the setting did nothing and the layer stayed off.

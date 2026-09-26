@@ -389,6 +389,15 @@ class Q_WebServer_Panel
 				return Q_WebServer_Autohost::status();
 			case 'autohost/toggle':
 				return self::apiAutohostToggle($parsed);
+			// The Cache tab: reads are GET, every change a POST (see Panel/Cache.php).
+			case 'cache':
+			case 'cache/entries':
+			case 'cache/settings':
+			case 'cache/purge':
+			case 'cache/clear':
+			case 'cache/warm':
+				if (!class_exists('Q_WebServer_Panel_Cache', false)) require_once __DIR__ . '/Panel/Cache.php';
+				return Q_WebServer_Panel_Cache::api($route, $parsed);
 			case 'watchdog':
 				require_once dirname(__DIR__) . '/WebServer/Watchdog.php';
 				return Q_WebServer_Watchdog::status();
