@@ -83,6 +83,30 @@ fetch_body() {
     fi
 }
 
+# On a failure, say how the fetch itself went: which client, its exit status,
+# how many bytes came back, and (with curl) the connection headers -- so a
+# platform that "serves nothing" (illumos/omnios does this today) can be told
+# apart, connection refused versus connected but an empty body, without a
+# shell on the box. Runs only on the failure path, so the pass output on every
+# other platform is unchanged.
+fetch_diag() {
+    _p="$1"
+    for _h in 127.0.0.1 localhost; do
+        _u="http://$_h:$_p/"
+        if command -v curl >/dev/null 2>&1; then
+            _w="$(curl -s --max-time 10 -o /dev/null -w 'http=%{http_code} bytes=%{size_download} time=%{time_total}s' "$_u" 2>/dev/null)"
+            echo "        curl $_u -> exit $?, ${_w:-no output}"
+            curl -sv --max-time 10 -o /dev/null "$_u" 2>&1 | grep -E '^[*<>]' | sed 's/^/          /' | head -12
+        elif command -v fetch >/dev/null 2>&1; then
+            fetch -q -o - "$_u" >/dev/null 2>&1
+            echo "        fetch $_u -> exit $?"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -O - "$_u" >/dev/null 2>&1
+            echo "        wget $_u -> exit $?"
+        fi
+    done
+}
+
 "$PHP" "$PHAR" --root="$TMP/web" --port="$PORT" --workers=2 > "$TMP/log" 2>&1 &
 SERVER=$!
 
@@ -143,6 +167,7 @@ else
     echo "  FAIL  the phar did not serve the page"
     echo "        got:  '$BODY'"
     echo "        want: 'served by the phar'"
+    fetch_diag "$PORT"
     FAILED=1
 fi
 

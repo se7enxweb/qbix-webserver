@@ -113,6 +113,20 @@ lists every exception with its reason; the Windows section below says what
 would bring each Windows gap back. For ODBC, Oracle or Firebird, use the Docker
 image ([docker.md](docker.md)) or the OS packages ([packages.md](packages.md)).
 
+### Known platform limitations
+
+- **omnios / illumos (SunOS):** the phar builds and boots — the server binds
+  and prints that it is listening — but a request over loopback comes back with
+  an empty body, so the serve check fails there. It is almost certainly the
+  `pcntl_fork` worker plus `stream_select` accept path behaving differently on
+  illumos than on Linux and the BSDs. The `Platforms` workflow runs omnios and
+  shows its result, but marks it experimental so it does not fail the run (the
+  same treatment as Haiku); the workflow does not gate releases in any case.
+  `tests/phar-serves.sh` prints fetch diagnostics on failure (the client used,
+  its exit status, and the connection headers over both `127.0.0.1` and
+  `localhost`) so the cause can be narrowed. A proper fix needs an illumos host
+  to iterate on, which the CI VM does not give a shell into.
+
 ## Creating a Binary
 
 ### From the phar (requires static-php-cli)

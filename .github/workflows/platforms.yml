@@ -229,7 +229,10 @@ jobs:
   # illumos is the surviving OpenSolaris line, and carries a genuinely
   # different set of system calls underneath the same POSIX surface.
   unix:
-    name: ${{ matrix.os }}
+    # omnios (illumos) is marked experimental: it is run and shown, but its
+    # failure does not fail the workflow (see docs/binaries.md). continue-on-error
+    # already applies to this job; the name suffix makes an expected red read as such.
+    name: ${{ matrix.os }}${{ matrix.experimental && ' (experimental)' || '' }}
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
@@ -240,6 +243,7 @@ jobs:
             action: vmactions/dragonflybsd-vm@v1
             install: pkg install -y php83 curl
           - os: omnios
+            experimental: true
             action: vmactions/omnios-vm@v1
             install: pkg install php-83 curl || pkg install curl
 
