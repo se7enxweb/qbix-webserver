@@ -38,6 +38,11 @@ foreach ($it as $file) {
 
 // Add the main server file at root
 $phar->addFile(__DIR__ . '/qbixserver.php', 'qbixserver.php');
+// The helpers the server starts from the phar with --qshell / --qconsole:
+// the shell's runner and the console tools (and qbixctl, which loads them).
+foreach (array('qshell.php', 'qbixconsole.php', 'qbixctl.php') as $__f) {
+	$phar->addFile(__DIR__ . '/' . $__f, $__f);
+}
 // The PHP extension manifest: Q_WebServer_Extensions reads it from build/ beside src/.
 foreach (array('build/extensions.json', 'build/extensions.schema.json') as $__f) {
 	if (is_file(__DIR__ . '/' . $__f)) $phar->addFile(__DIR__ . '/' . $__f, $__f);

@@ -137,6 +137,13 @@ class Q_WebServer_Ctl
 		if (!is_dir('/proc')) return null;
 		$serverScript = self::serverScript();
 		$realServer = @realpath($serverScript) ?: $serverScript;
+		// From the phar (or a binary) the server's command line names the
+		// phar file, not qbixserver.php inside it.
+		$cmdPrefix = self::serverCommand();
+		if (strncmp($serverScript, 'phar://', 7) === 0) {
+			$serverScript = end($cmdPrefix);
+			$realServer = @realpath($serverScript) ?: $serverScript;
+		}
 		$projectRoot = self::projectRoot();
 		$candidates = array();
 		foreach (glob('/proc/[1-9]*', GLOB_ONLYDIR) as $pdir) {
@@ -150,7 +157,7 @@ class Q_WebServer_Ctl
 			foreach ($args as $i => $arg) {
 				if ($arg === '') continue;
 				if ($arg === $serverScript) { $found = $i; break; }
-				if (substr($arg, -14) === 'qbixserver.php') {
+				if (substr($arg, -14) === 'qbixserver.php' or ($serverScript !== self::serverScript() and basename($arg) === basename($serverScript))) {
 					$real = $arg;
 					if ($arg[0] !== '/') {
 						$cwd = @readlink("$pdir/cwd");
@@ -351,6 +358,22 @@ class Q_WebServer_Ctl
 	}
 
 	/**
+	 * The argv that starts the server: PHP and qbixserver.php from source.
+	 * Run from the phar or a static binary, the script is inside it, and PHP
+	 * cannot be handed a phar:// path: the phar (or the binary) itself is
+	 * started, and its stub runs qbixserver.php.
+	 * @method serverCommand
+	 * @static
+	 * @return {array}
+	 */
+	static function serverCommand()
+	{
+		if (!class_exists('Q_WebServer_Shell_Entry', false)) require_once __DIR__ . '/Shell/Entry.php';
+		$packed = Q_WebServer_Shell_Entry::packed(self::$sourceDir);
+		return $packed !== null ? $packed : array(PHP_BINARY, self::serverScript());
+	}
+
+	/**
 	 * Start the server detached. Options it understands are passed on;
 	 * anything after `--` goes to qbixserver.php verbatim.
 	 * @return {array} array(ok, message)
@@ -361,7 +384,7 @@ class Q_WebServer_Ctl
 		if (self::isAlive(self::readPid($pidFile))) return array(false, 'already running (pid ' . self::readPid($pidFile) . ')');
 		$found = self::discoverServer($opts);
 		if ($found) return array(false, 'already running (pid ' . $found['pid'] . ')' . ($found['pidFile'] ? ', pid file ' . $found['pidFile'] : ''));
-		$args = array(PHP_BINARY, self::serverScript(), '--pid=' . $pidFile);
+		$args = array_merge(self::serverCommand(), array('--pid=' . $pidFile));
 		foreach (array('conf-dir', 'config', 'root', 'host', 'port', 'https-port', 'workers', 'distribution') as $o) {
 			if (isset($opts[$o]) and is_string($opts[$o]) and $opts[$o] !== '') $args[] = "--$o=" . $opts[$o];
 		}
@@ -404,7 +427,7 @@ class Q_WebServer_Ctl
 		if (($direct or $pidFile === '') and function_exists('posix_kill')) {
 			@posix_kill($pid, defined('SIGTERM') ? SIGTERM : 15);
 		} else {
-			@exec(implode(' ', array_map('escapeshellarg', array(PHP_BINARY, self::serverScript(), '--stop', '--pid=' . $pidFile))) . ' > /dev/null 2>&1');
+			@exec(implode(' ', array_map('escapeshellarg', array_merge(self::serverCommand(), array('--stop', '--pid=' . $pidFile)))) . ' > /dev/null 2>&1');
 		}
 		$deadline = microtime(true) + (float) ($opts['wait'] ?? 15);
 		while (microtime(true) < $deadline) {
@@ -432,7 +455,7 @@ class Q_WebServer_Ctl
 			@posix_kill($pid, defined('SIGHUP') ? SIGHUP : 1);
 			return array(true, "reload requested (pid $pid)");
 		}
-		@exec(implode(' ', array_map('escapeshellarg', array(PHP_BINARY, self::serverScript(), '--reload', '--pid=' . $pidFile))) . ' > /dev/null 2>&1', $o, $code);
+		@exec(implode(' ', array_map('escapeshellarg', array_merge(self::serverCommand(), array('--reload', '--pid=' . $pidFile)))) . ' > /dev/null 2>&1', $o, $code);
 		return $code === 0 ? array(true, "reload requested (pid $pid)") : array(false, 'reload failed');
 	}
 

@@ -244,12 +244,12 @@ class Q_WebServer_Shell_Server
 			// server's to run: the runner asks (see serverRun()).
 			'serverRun' => true,
 		);
-		$runner = self::runnerScript();
-		if ($runner === null) return array('ok' => false, 'error' => 'the shell runner (qshell.php) is missing from this installation');
+		$runner = self::runnerCommand();
+		if ($runner === null) return array('ok' => false, 'status' => 503, 'error' => self::MISSING);
 		$pipes = array();
 		// Only its three pipes and a trimmed environment: none of the server's
 		// sockets or secrets reach a process that will run as another user.
-		$proc = @proc_open(array(PHP_BINARY, $runner, '--exec'), Q_WebServer_Shell_Exec::descriptors(array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'))),
+		$proc = @proc_open(array_merge($runner, array('--exec')), Q_WebServer_Shell_Exec::descriptors(array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'))),
 			$pipes, null, Q_WebServer_Shell_Exec::environment(array()));
 		if (!is_resource($proc)) return array('ok' => false, 'error' => 'could not start the shell runner');
 		Q_WebServer_Shell_Exec::closeExtra($pipes);
@@ -638,8 +638,8 @@ class Q_WebServer_Shell_Server
 		}
 		$stdin = (string) ($m['stdin'] ?? '');
 		if (strlen($stdin) > 60000) return self::runReply($id, 2, 'too much input for a server command');
-		$runner = self::runnerScript();
-		if ($runner === null) return self::runReply($id, 1, 'the shell runner (qshell.php) is missing from this installation');
+		$runner = self::runnerCommand();
+		if ($runner === null) return self::runReply($id, 1, self::MISSING);
 		// These replace the running server, and this session with it: say so
 		// now, since the command's own answer may never arrive.
 		$away = array('server:reload' => 'the server reloads; this shell reconnects by itself in a moment',
@@ -648,7 +648,7 @@ class Q_WebServer_Shell_Server
 		if (isset($away[$spec['console']])) {
 			self::emit($j['session'], array('t' => 'err', 'id' => $id, 'd' => 'qsh: ' . $away[$spec['console']] . "\n", 'job' => $j['bg']));
 		}
-		$argv = array_merge(array(PHP_BINARY, $runner, '--console', $spec['console']), $args, $registry->contextFlags($spec, $args));
+		$argv = array_merge($runner, array('--console', $spec['console']), $args, $registry->contextFlags($spec, $args));
 		$pipes = array();
 		// None of the server's sockets, and only its own trimmed environment:
 		// variables the session exported are not handed to the server's rights.
@@ -813,10 +813,10 @@ class Q_WebServer_Shell_Server
 	private static function registry()
 	{
 		if (self::$registry === null) {
-			$runner = self::runnerScript();
-			if ($runner === null) return null;
+			$dir = self::engineDir();
+			if ($dir === null) return null;
 			self::$registry = new Q_WebServer_Shell_Registry(array(
-				'serverDir' => dirname($runner),
+				'serverDir' => $dir,
 				'startOptions' => (array) Q_Config::get('Q', 'webserver', 'startOptions', array()),
 			));
 		}
@@ -867,16 +867,24 @@ class Q_WebServer_Shell_Server
 	// ── What runners are told ───────────────────────────────────────────
 
 	/** The runner script: beside the server. */
-	private static function runnerScript()
+	/** What a job is told when this installation has no runner. */
+	const MISSING = 'the shell runner (qshell.php) is missing from this installation, so the shell cannot run commands here; reinstall the server (a source checkout, the phar and the binaries all carry it)';
+
+	/**
+	 * The argv that starts the runner, from source, the phar or a binary
+	 * (Q_WebServer_Shell_Entry); null when there is none.
+	 */
+	private static function runnerCommand()
 	{
 		$start = (array) Q_Config::get('Q', 'webserver', 'startOptions', array());
-		$dirs = array();
-		if (!empty($start['server'])) $dirs[] = dirname($start['server']);
-		$dirs[] = dirname(__DIR__, 4);
-		foreach ($dirs as $d) {
-			if (is_file($d . '/qshell.php')) return $d . '/qshell.php';
-		}
-		return null;
+		return Q_WebServer_Shell_Entry::shell($start['server'] ?? null);
+	}
+
+	/** The directory the engine's files are read from (real, or phar://…). */
+	private static function engineDir()
+	{
+		$start = (array) Q_Config::get('Q', 'webserver', 'startOptions', array());
+		return Q_WebServer_Shell_Entry::dir($start['server'] ?? null);
 	}
 
 
@@ -936,7 +944,7 @@ class Q_WebServer_Shell_Server
 	static function context()
 	{
 		$start = (array) Q_Config::get('Q', 'webserver', 'startOptions', array());
-		$runner = self::runnerScript();
+		$engineDir = self::engineDir();
 		$settings = array();
 		foreach (Q_WebServer_Shell_Settings::TABLE as $name => $t) {
 			$settings[$name] = Q_Config::get(...array_merge($t[0], array(null)));
@@ -953,7 +961,7 @@ class Q_WebServer_Shell_Server
 		$dir = Q_WebServer_Shell::dataDir();
 		if (!is_dir($dir)) @mkdir($dir, 0700, true);
 		return array(
-			'serverDir' => $runner ? dirname($runner) : dirname(__DIR__, 4),
+			'serverDir' => $engineDir !== null ? $engineDir : dirname(__DIR__, 4),
 			'startOptions' => $start,
 			'confDirs' => (array) Q_Config::get('Q', 'webserver', 'confDirs', array()),
 			'shellDir' => Q_WebServer_Shell::dataDir(),
@@ -1054,13 +1062,13 @@ class Q_WebServer_Shell_Server
 	static function meta()
 	{
 		if (self::$meta === null || time() - self::$metaAt > 300) {
-			$runner = self::runnerScript();
+			$runner = self::runnerCommand();
 			self::$metaAt = time();
 			self::$meta = array('commands' => array(), 'builtins' => array_keys(Q_WebServer_Shell_Builtins::DOCS),
 				'settings' => array_keys(Q_WebServer_Shell_Settings::TABLE), 'aliases' => array());
 			if ($runner) {
 				$start = (array) Q_Config::get('Q', 'webserver', 'startOptions', array());
-				$argv = array(PHP_BINARY, $runner, '--meta');
+				$argv = array_merge($runner, array('--meta'));
 				foreach (array('config' => 'config', 'conf-dir' => 'confDir', 'root' => 'root', 'distribution' => 'distribution') as $o => $k) {
 					if (!empty($start[$k])) $argv[] = '--' . $o . '=' . $start[$k];
 				}

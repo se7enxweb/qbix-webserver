@@ -285,8 +285,9 @@ class Q_WebServer_Shell_Registry
 					return $io->runOnServer(array('kind' => 'console', 'name' => $spec['console'],
 						'args' => array_values($args), 'stdin' => (string) $stdin), $sink);
 				}
-				$dir = (string) ($this->ctx['serverDir'] ?? '');
-				$argv = array(PHP_BINARY, $dir . '/qbixconsole.php', $spec['console']);
+				$argv = Q_WebServer_Shell_Entry::console((string) ($this->ctx['serverDir'] ?? ''));
+				if ($argv === null) { $sink->error("qsh: the console tools are missing from this installation\n"); return 127; }
+				$argv[] = $spec['console'];
 				foreach ($args as $a) $argv[] = $a;
 				foreach ($this->contextFlags($spec, $args) as $f) $argv[] = $f;
 				return Q_WebServer_Shell_Exec::run($argv, $stdin, $sink, $env);

@@ -25,9 +25,14 @@ if (PHP_SAPI !== 'cli') { exit("qshell runs from the command line\n"); }
 // messages on standard error, where the server keeps them out of the terminal.
 if (($argv[1] ?? '') === '--console') {
 	if (function_exists('posix_setsid')) @posix_setsid();
-	$args = array_merge(array('-d', 'display_errors=stderr', '-d', 'log_errors=0', __DIR__ . '/qbixconsole.php'), array_slice($argv, 2));
-	if (function_exists('pcntl_exec')) @pcntl_exec(PHP_BINARY, $args);
-	$p = proc_open(array_merge(array(PHP_BINARY), $args), array(0 => STDIN, 1 => STDOUT, 2 => STDERR), $pipes);
+	// From source: PHP and qbixconsole.php beside this file. Embedded in the
+	// phar or a binary: that file started with --qconsole (see Entry).
+	require_once __DIR__ . '/src/Q/WebServer/Shell/Entry.php';
+	$cmd = Q_WebServer_Shell_Entry::console(__DIR__);
+	if ($cmd === null) { fwrite(STDERR, "qshell: the console tools are missing from this installation\n"); exit(127); }
+	$cmd = array_merge($cmd, array_slice($argv, 2));
+	if (function_exists('pcntl_exec')) @pcntl_exec($cmd[0], array_slice($cmd, 1));
+	$p = proc_open($cmd, array(0 => STDIN, 1 => STDOUT, 2 => STDERR), $pipes);
 	exit(is_resource($p) ? proc_close($p) : 127);
 }
 if (!defined('DS')) define('DS', DIRECTORY_SEPARATOR);

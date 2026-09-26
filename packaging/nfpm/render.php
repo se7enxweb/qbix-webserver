@@ -76,7 +76,7 @@ $depends = array_values(array_unique($depends));
 $root = dirname(__DIR__, 2);
 $share = '/usr/share/qbix-webserver';
 $contents = array();
-exec('git -C ' . escapeshellarg($root) . ' ls-files -- bin/qbixserver.phar qbixserver.php qbixctl.php qbixconsole.php src build designs docs web LICENSE', $files, $rc);
+exec('git -C ' . escapeshellarg($root) . ' ls-files -- bin/qbixserver.phar qbixserver.php qbixctl.php qbixconsole.php qshell.php src build designs docs web LICENSE', $files, $rc);
 if ($rc !== 0 || !$files) {
 	fwrite(STDERR, "git ls-files failed in $root\n");
 	exit(1);

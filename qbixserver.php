@@ -19,7 +19,32 @@
  *   --debug          Enable verbose logging
  *   --version        Print version and exit
  *   --help           Print usage and exit
+ *
+ * Internal (how the server starts its own helpers from the phar or a static
+ * binary, where they are embedded; not meant to be typed):
+ *   --qshell ...     the shell's runner, qshell.php (see docs/shell.md)
+ *   --qconsole ...   the console tools, qbixconsole.php
  */
+
+// The embedded helpers: hand the rest of the command line to them. A script
+// inside a phar cannot be given to PHP by path, so the server starts the phar
+// (or the binary) with one of these (Q_WebServer_Shell_Entry).
+if (PHP_SAPI === 'cli' && in_array($argv[1] ?? '', array('--qshell', '--qconsole'), true)) {
+	$__helper = __DIR__ . ($argv[1] === '--qshell' ? '/qshell.php' : '/qbixconsole.php');
+	if ($argv[1] === '--qconsole') {
+		// What -d display_errors=stderr -d log_errors=0 does from source:
+		// PHP's messages on standard error, where the server keeps them out
+		// of the terminal. A static binary takes no -d.
+		ini_set('display_errors', 'stderr');
+		ini_set('log_errors', '0');
+	}
+	$argv = array_merge(array($__helper), array_slice($argv, 2));
+	$argc = count($argv);
+	$_SERVER['argv'] = $argv;
+	$_SERVER['argc'] = $argc;
+	require $__helper;
+	exit(0);
+}
 
 define('QBIX_SERVER_VERSION', '1.5.0');
 

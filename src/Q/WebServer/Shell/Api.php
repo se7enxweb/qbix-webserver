@@ -78,7 +78,9 @@ class Q_WebServer_Shell_Api
 				'tier' => isset($body['tier']) ? (string) $body['tier'] : null,
 				'timeout' => isset($body['timeout']) ? max(1, min((int) Q_WebServer_Shell::config('timeout'), (int) $body['timeout'])) : null,
 			));
-			if (empty($r['ok'])) return array(429, array('error' => $r['error'] ?? 'not started'));
+			// 429 is "too many jobs"; a runner that cannot start at all is the
+			// installation's fault (503), and says so.
+			if (empty($r['ok'])) return array((int) ($r['status'] ?? 429), array('error' => $r['error'] ?? 'not started'));
 			return array(202, array('ok' => true, 'job' => $r['id'], 'n' => $r['n'] ?? null, 'session' => $key,
 				'poll' => '/Q/api/shell/jobs/' . $r['id']));
 		}

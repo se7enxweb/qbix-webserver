@@ -20,7 +20,7 @@ if (!is_file($pharFile)) {
 	exit(2);
 }
 
-// The same selection build-phar.php makes: all of src/, qbixserver.php, the extension manifest, all of web/ and designs/.
+// The same selection build-phar.php makes: all of src/, qbixserver.php and its helpers (qshell, qbixconsole, qbixctl), the extension manifest, all of web/ and designs/.
 $expected = array();
 $add = function ($dir) use (&$expected, $base) {
 	if (!is_dir($dir)) return;
@@ -34,6 +34,7 @@ $add = function ($dir) use (&$expected, $base) {
 };
 $add($base . '/src');
 $expected['qbixserver.php'] = sha1_file($base . '/qbixserver.php');
+foreach (array('qshell.php', 'qbixconsole.php', 'qbixctl.php') as $f) $expected[$f] = sha1_file("$base/$f");
 if (is_file($base . '/DISTRIBUTION')) $expected['DISTRIBUTION'] = sha1_file($base . '/DISTRIBUTION');
 foreach (array('build/extensions.json', 'build/extensions.schema.json') as $f) {
 	if (is_file("$base/$f")) $expected[$f] = sha1_file("$base/$f");
